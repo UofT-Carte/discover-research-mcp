@@ -31,7 +31,7 @@ async def test_tag_filter_uses_values_key(httpx_mock: HTTPXMock):
     tags_filter = next(f for f in body["filters"] if f["name"] == "tags")
 
     assert "selectedValues" not in tags_filter, "selectedValues must not be sent"
-    assert tags_filter["values"] == {"tags": ["Machine learning"]}
+    assert tags_filter["values"] == ["Machine learning"]
     assert tags_filter["useValuesToFilter"] is True
     assert tags_filter["matchDocsWithMissingValues"] is False
 
@@ -49,7 +49,7 @@ async def test_department_filter_uses_values_key(httpx_mock: HTTPXMock):
     dept_filter = next(f for f in body["filters"] if f["name"] == "department")
 
     assert "selectedValues" not in dept_filter, "selectedValues must not be sent"
-    assert dept_filter["values"] == {"department": ["Faculty of Arts and Science, Department of Chemistry"]}
+    assert dept_filter["values"] == ["Faculty of Arts and Science, Department of Chemistry"]
     assert dept_filter["useValuesToFilter"] is True
     assert dept_filter["matchDocsWithMissingValues"] is False
 
@@ -67,7 +67,7 @@ async def test_availability_filter_uses_values_key(httpx_mock: HTTPXMock):
     avail_filter = next(f for f in body["filters"] if f["name"] == "customFilterThree")
 
     assert "selectedValues" not in avail_filter, "selectedValues must not be sent"
-    assert avail_filter["values"] == {"customFilterThree": ["Media enquiries"]}
+    assert avail_filter["values"] == ["Media enquiries"]
     assert avail_filter["useValuesToFilter"] is True
     assert avail_filter["matchDocsWithMissingValues"] is False
 
