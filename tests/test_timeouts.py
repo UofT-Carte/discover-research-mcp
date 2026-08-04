@@ -5,8 +5,10 @@ consume its timeout once per attempt. These tests pin the relationships that
 keep the worst case bounded rather than restating the constants.
 """
 
+import httpx
 import pytest
 
+import portal
 import server
 
 TOOL_NAMES = [
@@ -35,8 +37,8 @@ def test_connect_timeout_stays_cheap_to_retry():
     multiplied by the attempt count. Keeping it well below the read timeout is
     what stops a dead host from stalling a caller for minutes.
     """
-    connect = server.PORTAL_TIMEOUT.connect
-    attempts = server.RETRY_ATTEMPTS + 1
+    connect = portal.PORTAL_TIMEOUT.connect
+    attempts = portal.RETRY_ATTEMPTS + 1
 
     assert connect is not None
     assert connect * attempts <= 20, (
@@ -46,10 +48,10 @@ def test_connect_timeout_stays_cheap_to_retry():
 
 def test_read_timeout_is_not_multiplied_by_retry():
     """Read timeouts are excluded from retry, so they are paid at most once."""
-    read = server.PORTAL_TIMEOUT.read
+    read = portal.PORTAL_TIMEOUT.read
 
     assert read is not None
-    assert not issubclass(server.httpx.ReadTimeout, server.RETRY_EXCEPTIONS)
+    assert not issubclass(httpx.ReadTimeout, portal.RETRY_EXCEPTIONS)
 
 
 def test_tool_timeout_is_a_backstop_not_the_primary_bound():
@@ -58,4 +60,4 @@ def test_tool_timeout_is_a_backstop_not_the_primary_bound():
     A tool timeout that undercuts the read timeout would mask portal
     diagnostics behind a generic 'execution timed out'.
     """
-    assert server.TOOL_TIMEOUT_SECONDS > server.PORTAL_TIMEOUT.read
+    assert server.TOOL_TIMEOUT_SECONDS > portal.PORTAL_TIMEOUT.read

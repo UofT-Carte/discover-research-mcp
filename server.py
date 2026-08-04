@@ -5,26 +5,39 @@ Provides tools to search for U of T scholars and retrieve their profiles,
 publications, and research grants.
 """
 
-from contextlib import asynccontextmanager
-from dataclasses import dataclass
 from typing import Annotated
 
 import httpx
-from bs4 import BeautifulSoup
 from fastmcp import Context, FastMCP
-from fastmcp.exceptions import ToolError
 from fastmcp.server.middleware.caching import ResponseCachingMiddleware
 from fastmcp.server.middleware.error_handling import RetryMiddleware
-from pydantic import BaseModel, Field, StringConstraints
+from pydantic import Field, StringConstraints
 
-BASE_URL = "https://discover.research.utoronto.ca"
-API_URL = f"{BASE_URL}/api"
-
-# Connect is kept far below read because connection faults are the retried
-# class, so the connect timeout is paid once per attempt: a dead host costs
-# 3 x 5s rather than 3 x 30s. A slow-but-alive portal is not retried, so the
-# read timeout is paid at most once.
-PORTAL_TIMEOUT = httpx.Timeout(30.0, connect=5.0)
+from models import (
+    FilterOptionsResult,
+    GrantsResult,
+    PageNumber,
+    PageSize,
+    PublicationsResult,
+    ScholarId,
+    ScholarProfile,
+    SearchResult,
+)
+from portal import (
+    API_URL,
+    BASE_URL,
+    DEFAULT_FILTERS,
+    RETRY_ATTEMPTS,
+    RETRY_BASE_DELAY_SECONDS,
+    RETRY_EXCEPTIONS,
+    format_scholar_summary,
+    http_client,
+    lifespan,
+    normalize_scholar_id,
+    portal_error,
+    strip_html,
+    unwrap,
+)
 
 # A per-attempt ceiling on everything a tool does, HTTP or not. Set above the
 # read timeout so the HTTP layer fails first with a specific diagnostic and
@@ -34,74 +47,6 @@ TOOL_TIMEOUT_SECONDS = 35.0
 # Scholar records change on the order of weeks, so a short cache costs nothing
 # in freshness while sparing the portal repeated identical lookups.
 RESPONSE_CACHE_TTL_SECONDS = 900
-
-RETRY_ATTEMPTS = 2
-RETRY_BASE_DELAY_SECONDS = 0.5
-
-# Retry only failures to establish or hold a connection.
-#
-# The middleware default is (ConnectionError, TimeoutError) — Python builtins
-# that no httpx exception inherits from, so retry would silently never fire.
-#
-# ReadTimeout is deliberately absent: the portal accepted the request and is
-# merely slow, so retrying re-pays the full read timeout. HTTPStatusError is
-# absent too, so definitive answers like 404 are not retried.
-RETRY_EXCEPTIONS = (
-    httpx.NetworkError,
-    httpx.ConnectTimeout,
-    httpx.PoolTimeout,
-)
-
-DEFAULT_FILTERS = [
-    {
-        "name": "department",
-        "matchDocsWithMissingValues": True,
-        "useValuesToFilter": False,
-    },
-    {
-        "name": "customFilterThree",
-        "matchDocsWithMissingValues": True,
-        "useValuesToFilter": False,
-    },
-    {
-        "name": "customFilterFour",
-        "matchDocsWithMissingValues": True,
-        "useValuesToFilter": False,
-    },
-    {
-        "name": "customFilterFive",
-        "matchDocsWithMissingValues": True,
-        "useValuesToFilter": False,
-    },
-    {"name": "tags", "matchDocsWithMissingValues": True, "useValuesToFilter": False},
-]
-
-HEADERS = {
-    "Accept": "application/json",
-    "Content-Type": "application/json",
-    "Origin": BASE_URL,
-    "Referer": BASE_URL,
-}
-
-
-@dataclass
-class PortalSession:
-    """Resources shared by every tool for the server's lifetime."""
-
-    http: httpx.AsyncClient
-
-
-@asynccontextmanager
-async def lifespan(_server: FastMCP):
-    """Own one HTTP client for the server's lifetime.
-
-    Building a client per tool call pays TCP and TLS setup on every request and
-    throws the connection pool away immediately. Tools reach this through the
-    request context; it is deliberately not per-request dependency injection,
-    which would construct a client per call and defeat the purpose.
-    """
-    async with httpx.AsyncClient(headers=HEADERS, timeout=PORTAL_TIMEOUT) as http:
-        yield PortalSession(http=http)
 
 
 def build_response_cache() -> ResponseCachingMiddleware:
@@ -130,225 +75,6 @@ mcp.add_middleware(
         retry_exceptions=RETRY_EXCEPTIONS,
     )
 )
-
-
-def _http(ctx: Context) -> httpx.AsyncClient:
-    """The shared HTTP client for this server."""
-    return ctx.request_context.lifespan_context.http
-
-
-def _strip_html(html: str) -> str:
-    """Strip HTML tags and decode entities from a string."""
-    if not html:
-        return ""
-    soup = BeautifulSoup(html, "html.parser")
-    return soup.get_text(separator=" ").strip()
-
-
-def _portal_error(e: httpx.HTTPError) -> ToolError:
-    """Translate an upstream portal failure into a client-visible tool error.
-
-    The result is raised, never returned. A returned string is delivered to the
-    client as a *successful* tool result, leaving the caller unable to tell a
-    portal outage from a genuine empty result set.
-    """
-    if isinstance(e, httpx.HTTPStatusError):
-        status = e.response.status_code
-        if status == 404:
-            return ToolError(
-                "Resource not found. Check that the scholar ID is correct."
-            )
-        if status == 400:
-            return ToolError(f"Bad request — {e.response.text[:200]}")
-        if status == 429:
-            return ToolError("Rate limit exceeded. Please wait before retrying.")
-        return ToolError(f"Portal returned status {status}")
-    if isinstance(e, httpx.TimeoutException):
-        return ToolError("Request timed out. Please try again.")
-    return ToolError(f"Could not reach the portal — {type(e).__name__}: {e}")
-
-
-def _unwrap(value: object, key: str) -> str | None:
-    """Pull a scalar out of a field the portal may return wrapped.
-
-    Some profile fields arrive as objects rather than strings — `orcid` as
-    {"value", "uri"} and `emailAddress` as {"address"} (observed 2026-08-04).
-    Returns the value as-is when it is already scalar.
-    """
-    if isinstance(value, dict):
-        return value.get(key)
-    return value
-
-
-def _normalize_scholar_id(scholar_id: str) -> str:
-    """Reduce a scholar identifier to the numeric form the portal expects.
-
-    Search results expose both a numeric id ('17964') and a URL-style id
-    ('17964-michael-guerzhoy'); either is accepted anywhere a scholar id is.
-    """
-    return scholar_id.split("-")[0]
-
-
-def _format_scholar_summary(scholar: dict) -> dict:
-    """Extract a compact summary of a scholar from a search result."""
-    about = scholar.get("tabSummaryAbout", {})
-    bio = _strip_html(about.get("value", "")) if about else ""
-    if len(bio) > 300:
-        bio = bio[:300].rsplit(" ", 1)[0] + "…"
-
-    positions = [
-        p.get("department", "") + " — " + p.get("position", "")
-        for p in scholar.get("positions", [])
-    ]
-    tags = [t["value"] for t in scholar.get("tags", {}).get("explicit", [])]
-
-    return {
-        "id": scholar.get("discoveryId"),
-        "url_id": scholar.get("discoveryUrlId"),
-        "name": scholar.get("firstNameLastName"),
-        "positions": positions,
-        "tags": tags,
-        "bio_excerpt": bio,
-        "availability": scholar.get("customFilterThree", []),
-        "profile_url": f"{BASE_URL}/{scholar.get('discoveryUrlId', '')}",
-    }
-
-
-# ─── Shared parameter types ─────────────────────────────────────────────────────
-
-ScholarId = Annotated[
-    str,
-    StringConstraints(strip_whitespace=True, min_length=1),
-    Field(
-        description="Scholar ID from search results — either the numeric form (e.g. '17964') or the URL-style form (e.g. '17964-michael-guerzhoy'). Both are accepted by every scholar tool."
-    ),
-]
-PageNumber = Annotated[int, Field(description="Page number (1-indexed)", ge=1)]
-PageSize = Annotated[int, Field(description="Results per page (max 100)", ge=1, le=100)]
-
-
-# ─── Output models ──────────────────────────────────────────────────────────────
-#
-# These drive the published output schemas.
-#
-# Optional types are required where a field is read without a default and is
-# simply missing for some records — `id`, `name`, `year` — and where `email`
-# and `orcid` are unwrapped from objects the portal may not send at all.
-#
-# Sampled on 2026-08-04 (25 grants, 25 publications, 2 profiles): `amount` was
-# missing from all 25 grants, `doi` from 7 publications and `journal` from 4,
-# and `emailAddress` from one profile. Those were absent keys rather than
-# explicit nulls, so the `.get` defaults do apply and the values arrive as "".
-# The optional types on those particular fields are therefore defensive — the
-# sample is 25 records per endpoint, not the whole portal.
-
-
-class ScholarSummary(BaseModel):
-    """One scholar as returned by search."""
-
-    id: str | None = Field(default=None, description="Numeric id for the other tools")
-    url_id: str | None = Field(default=None, description="Slug used in the profile URL")
-    name: str | None = None
-    positions: list[str] = Field(
-        default_factory=list, description="'Department — Position Title'"
-    )
-    tags: list[str] = Field(default_factory=list, description="Research topic tags")
-    bio_excerpt: str = ""
-    availability: list[str] = Field(default_factory=list)
-    profile_url: str = ""
-
-
-class SearchResult(BaseModel):
-    total: int
-    page: int
-    per_page: int
-    has_more: bool
-    scholars: list[ScholarSummary] = Field(default_factory=list)
-
-
-class Degree(BaseModel):
-    name: str = ""
-    institution: str = ""
-
-
-class ScholarProfile(BaseModel):
-    """A scholar's full profile."""
-
-    id: str | None = None
-    name: str | None = None
-    profile_url: str = ""
-    bio: str = ""
-    email: str | None = None
-    phone: str | None = None
-    address: str | None = None
-    orcid: str | None = None
-    elements_profile_url: str | None = None
-    positions: list[dict] = Field(default_factory=list)
-    academic_appointments: list[dict] = Field(default_factory=list)
-    non_academic_appointments: list[dict] = Field(default_factory=list)
-    degrees: list[Degree] = Field(default_factory=list)
-    research_topics: list[str] = Field(default_factory=list)
-    availability: list[str] = Field(default_factory=list)
-    personal_websites: list[dict] = Field(default_factory=list)
-    publication_count: int = 0
-    grant_count: int = 0
-    professional_activity_count: int = 0
-    teaching_summary: str = ""
-    grants_summary: str = ""
-
-
-class Publication(BaseModel):
-    id: str | None = None
-    title: str | None = None
-    type: str | None = Field(default=None, description="e.g. 'Journal article'")
-    year: int | None = None
-    authors: str = ""
-    journal: str | None = None
-    abstract: str = ""
-    doi: str | None = None
-    url: str | None = None
-
-
-class PublicationsResult(BaseModel):
-    scholar_id: str
-    total: int
-    page: int
-    per_page: int
-    has_more: bool
-    publications: list[Publication] = Field(default_factory=list)
-
-
-class Grant(BaseModel):
-    id: str | None = None
-    title: str | None = None
-    type: str | None = Field(
-        default=None, description="e.g. 'Sponsored Research Agreement'"
-    )
-    funder: str | None = None
-    start_year: int | None = None
-    end_year: int | None = None
-    amount: str | None = None
-
-
-class GrantsResult(BaseModel):
-    scholar_id: str
-    total: int
-    page: int
-    per_page: int
-    has_more: bool
-    grants: list[Grant] = Field(default_factory=list)
-
-
-class FilterOption(BaseModel):
-    value: str = Field(description="Exact string to pass as a search filter")
-    count: int = Field(description="Number of matching scholars")
-
-
-class FilterOptionsResult(BaseModel):
-    filter_type: str
-    query: str
-    options: list[FilterOption] = Field(default_factory=list)
-    note: str | None = None
 
 
 # ─── Tools ───────────────────────────────────────────────────────────────────────
@@ -458,7 +184,7 @@ async def discover_search_scholars(
     }
 
     try:
-        resp = await _http(ctx).post(f"{API_URL}/users", json=payload)
+        resp = await http_client(ctx).post(f"{API_URL}/users", json=payload)
         resp.raise_for_status()
         data = resp.json()
 
@@ -466,7 +192,7 @@ async def discover_search_scholars(
         total = pagination.get("total", 0)
         resources = data.get("resource", [])
 
-        scholars = [_format_scholar_summary(s) for s in resources]
+        scholars = [format_scholar_summary(s) for s in resources]
 
         return SearchResult(
             total=total,
@@ -477,7 +203,7 @@ async def discover_search_scholars(
         )
 
     except httpx.HTTPError as e:
-        raise _portal_error(e) from e
+        raise portal_error(e) from e
 
 
 @mcp.tool(
@@ -507,10 +233,10 @@ async def discover_get_scholar(ctx: Context, scholar_id: ScholarId) -> ScholarPr
     scholar_id="17964". Either the numeric id or the URL-style id
     ("17964-michael-guerzhoy") is accepted.
     """
-    numeric_id = _normalize_scholar_id(scholar_id)
+    numeric_id = normalize_scholar_id(scholar_id)
 
     try:
-        resp = await _http(ctx).get(f"{API_URL}/users/{numeric_id}")
+        resp = await http_client(ctx).get(f"{API_URL}/users/{numeric_id}")
         resp.raise_for_status()
         data = resp.json()
 
@@ -538,12 +264,12 @@ async def discover_get_scholar(ctx: Context, scholar_id: ScholarId) -> ScholarPr
             id=data.get("discoveryId"),
             name=data.get("firstNameLastName"),
             profile_url=f"{BASE_URL}/{data.get('discoveryUrlId', numeric_id)}",
-            bio=_strip_html(data.get("tabSummaryAbout", {}).get("value", "")),
-            email=_unwrap(data.get("emailAddress"), "address"),
+            bio=strip_html(data.get("tabSummaryAbout", {}).get("value", "")),
+            email=unwrap(data.get("emailAddress"), "address"),
             phone=phone,
             address=address,
-            orcid=_unwrap(data.get("orcid"), "value"),
-            elements_profile_url=_unwrap(data.get("elementsUserProfileUrl"), "uri"),
+            orcid=unwrap(data.get("orcid"), "value"),
+            elements_profile_url=unwrap(data.get("elementsUserProfileUrl"), "uri"),
             positions=data.get("positions") or [],
             academic_appointments=data.get("academicAppointments") or [],
             non_academic_appointments=data.get("nonAcademicAppointments") or [],
@@ -554,14 +280,14 @@ async def discover_get_scholar(ctx: Context, scholar_id: ScholarId) -> ScholarPr
             publication_count=len(linked.get("publications") or []),
             grant_count=len(linked.get("grants") or []),
             professional_activity_count=len(linked.get("professionalActivities") or []),
-            teaching_summary=_strip_html(teaching.get("value", "")) if teaching else "",
-            grants_summary=_strip_html(grants_summary.get("value", ""))
+            teaching_summary=strip_html(teaching.get("value", "")) if teaching else "",
+            grants_summary=strip_html(grants_summary.get("value", ""))
             if grants_summary
             else "",
         )
 
     except httpx.HTTPError as e:
-        raise _portal_error(e) from e
+        raise portal_error(e) from e
 
 
 @mcp.tool(
@@ -598,7 +324,7 @@ async def discover_get_scholar_publications(
     scholar_id="17964". "Find their oldest publications first" adds
     sort="dateAsc". Either the numeric id or the URL-style id is accepted.
     """
-    scholar_id = _normalize_scholar_id(scholar_id)
+    scholar_id = normalize_scholar_id(scholar_id)
     start_from = (page - 1) * per_page
     payload = {
         "objectId": scholar_id,
@@ -609,7 +335,9 @@ async def discover_get_scholar_publications(
     }
 
     try:
-        resp = await _http(ctx).post(f"{API_URL}/publications/linkedTo", json=payload)
+        resp = await http_client(ctx).post(
+            f"{API_URL}/publications/linkedTo", json=payload
+        )
         resp.raise_for_status()
         data = resp.json()
 
@@ -635,7 +363,7 @@ async def discover_get_scholar_publications(
                     "year": year,
                     "authors": authors,
                     "journal": p.get("journal", p.get("publisherName", "")),
-                    "abstract": _strip_html(p.get("abstract", ""))[:500]
+                    "abstract": strip_html(p.get("abstract", ""))[:500]
                     if p.get("abstract")
                     else "",
                     "doi": p.get("doi", ""),
@@ -653,7 +381,7 @@ async def discover_get_scholar_publications(
         )
 
     except httpx.HTTPError as e:
-        raise _portal_error(e) from e
+        raise portal_error(e) from e
 
 
 @mcp.tool(
@@ -682,7 +410,7 @@ async def discover_get_scholar_grants(
     For example: "What grants does scholar 1545 hold?" becomes
     scholar_id="1545". Either the numeric id or the URL-style id is accepted.
     """
-    scholar_id = _normalize_scholar_id(scholar_id)
+    scholar_id = normalize_scholar_id(scholar_id)
     start_from = (page - 1) * per_page
     payload = {
         "objectId": scholar_id,
@@ -693,7 +421,7 @@ async def discover_get_scholar_grants(
     }
 
     try:
-        resp = await _http(ctx).post(f"{API_URL}/grants/linkedTo", json=payload)
+        resp = await http_client(ctx).post(f"{API_URL}/grants/linkedTo", json=payload)
         resp.raise_for_status()
         data = resp.json()
 
@@ -727,7 +455,7 @@ async def discover_get_scholar_grants(
         )
 
     except httpx.HTTPError as e:
-        raise _portal_error(e) from e
+        raise portal_error(e) from e
 
 
 @mcp.tool(
@@ -804,7 +532,7 @@ async def discover_get_filter_options(
     }
 
     try:
-        resp = await _http(ctx).post(f"{API_URL}/users", json=payload)
+        resp = await http_client(ctx).post(f"{API_URL}/users", json=payload)
         resp.raise_for_status()
         data = resp.json()
 
@@ -832,7 +560,7 @@ async def discover_get_filter_options(
         )
 
     except httpx.HTTPError as e:
-        raise _portal_error(e) from e
+        raise portal_error(e) from e
 
 
 if __name__ == "__main__":
