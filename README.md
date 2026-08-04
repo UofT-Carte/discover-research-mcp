@@ -23,8 +23,8 @@ uv sync
 
 ## Connecting a client
 
-Add the server to your MCP client's configuration. `mcp.json` in this repo is a
-working example:
+Copy the entry from [`mcp.json`](mcp.json) into your MCP client's
+configuration, replacing the path with the absolute path to your clone:
 
 ```json
 {
@@ -32,15 +32,23 @@ working example:
     "discover-research-mcp": {
       "type": "stdio",
       "command": "uv",
-      "args": ["run", "python", "server.py"],
-      "cwd": "/absolute/path/to/discover-research-mcp"
+      "args": [
+        "run",
+        "--directory",
+        "/absolute/path/to/discover-research-mcp",
+        "python",
+        "server.py"
+      ]
     }
   }
 }
 ```
 
-`cwd` must be the absolute path to your clone. The copy checked in points at
-one developer's home directory — change it to yours.
+The path has to be absolute. An MCP client starts the server from its own
+working directory — usually not your clone — so there is nothing for a relative
+path to resolve against. `uv run --directory` is used rather than a `cwd` key
+because it makes uv resolve this project's environment explicitly, and every
+client understands plain arguments.
 
 ## Tools
 

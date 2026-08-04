@@ -1,10 +1,16 @@
 {
+  "_comment": "Template. Replace the --directory path with the absolute path to your clone, then copy this entry into your MCP client's config. An MCP client starts the server from its own working directory, so the path cannot be relative.",
   "mcpServers": {
     "discover-research-mcp": {
       "type": "stdio",
       "command": "uv",
-      "args": ["run", "python", "server.py"],
-      "cwd": "/Users/alex/code/work/discover-research-mcp"
+      "args": [
+        "run",
+        "--directory",
+        "/absolute/path/to/discover-research-mcp",
+        "python",
+        "server.py"
+      ]
     }
   }
 }
