@@ -5,13 +5,14 @@ Provides tools to search for U of T scholars and retrieve their profiles,
 publications, and research grants.
 """
 
+from contextlib import asynccontextmanager
+from dataclasses import dataclass
+
 import httpx
 from bs4 import BeautifulSoup
-from fastmcp import FastMCP
+from fastmcp import Context, FastMCP
 from fastmcp.exceptions import ToolError
 from pydantic import BaseModel, ConfigDict, Field, field_validator
-
-mcp = FastMCP("discover_research_mcp")
 
 BASE_URL = "https://discover.research.utoronto.ca"
 API_URL = f"{BASE_URL}/api"
@@ -47,6 +48,34 @@ HEADERS = {
     "Origin": BASE_URL,
     "Referer": BASE_URL,
 }
+
+
+@dataclass
+class PortalSession:
+    """Resources shared by every tool for the server's lifetime."""
+
+    http: httpx.AsyncClient
+
+
+@asynccontextmanager
+async def lifespan(_server: FastMCP):
+    """Own one HTTP client for the server's lifetime.
+
+    Building a client per tool call pays TCP and TLS setup on every request and
+    throws the connection pool away immediately. Tools reach this through the
+    request context; it is deliberately not per-request dependency injection,
+    which would construct a client per call and defeat the purpose.
+    """
+    async with httpx.AsyncClient(headers=HEADERS, timeout=TIMEOUT) as http:
+        yield PortalSession(http=http)
+
+
+mcp = FastMCP("discover_research_mcp", lifespan=lifespan)
+
+
+def _http(ctx: Context) -> httpx.AsyncClient:
+    """The shared HTTP client for this server."""
+    return ctx.request_context.lifespan_context.http
 
 
 def _strip_html(html: str) -> str:
@@ -373,7 +402,9 @@ class FilterOptionsResult(BaseModel):
         "openWorldHint": True,
     },
 )
-async def discover_search_scholars(params: SearchScholarsInput) -> SearchResult:
+async def discover_search_scholars(
+    params: SearchScholarsInput, ctx: Context
+) -> SearchResult:
     """Search for University of Toronto scholars by name, subject, discipline, or topic.
 
     Returns a paginated list of matching scholar profiles with basic info. Use
@@ -430,15 +461,9 @@ async def discover_search_scholars(params: SearchScholarsInput) -> SearchResult:
     }
 
     try:
-        async with httpx.AsyncClient() as client:
-            resp = await client.post(
-                f"{API_URL}/users",
-                headers=HEADERS,
-                json=payload,
-                timeout=TIMEOUT,
-            )
-            resp.raise_for_status()
-            data = resp.json()
+        resp = await _http(ctx).post(f"{API_URL}/users", json=payload)
+        resp.raise_for_status()
+        data = resp.json()
 
         pagination = data.get("pagination", {})
         total = pagination.get("total", 0)
@@ -468,7 +493,9 @@ async def discover_search_scholars(params: SearchScholarsInput) -> SearchResult:
         "openWorldHint": True,
     },
 )
-async def discover_get_scholar(params: GetScholarInput) -> ScholarProfile:
+async def discover_get_scholar(
+    params: GetScholarInput, ctx: Context
+) -> ScholarProfile:
     """Retrieve the full profile for a University of Toronto scholar.
 
     Returns bio, positions, degrees, contact details, research areas, and counts
@@ -487,14 +514,9 @@ async def discover_get_scholar(params: GetScholarInput) -> ScholarProfile:
     numeric_id = _normalize_scholar_id(params.scholar_id)
 
     try:
-        async with httpx.AsyncClient() as client:
-            resp = await client.get(
-                f"{API_URL}/users/{numeric_id}",
-                headers=HEADERS,
-                timeout=TIMEOUT,
-            )
-            resp.raise_for_status()
-            data = resp.json()
+        resp = await _http(ctx).get(f"{API_URL}/users/{numeric_id}")
+        resp.raise_for_status()
+        data = resp.json()
 
         linked = data.get("linkedObjectIds", {})
         tags = [t["value"] for t in data.get("tags", {}).get("explicit", [])]
@@ -557,7 +579,7 @@ async def discover_get_scholar(params: GetScholarInput) -> ScholarProfile:
     },
 )
 async def discover_get_scholar_publications(
-    params: GetPublicationsInput,
+    params: GetPublicationsInput, ctx: Context
 ) -> PublicationsResult:
     """Retrieve publications (scholarly and creative works) for a U of T scholar.
 
@@ -580,15 +602,9 @@ async def discover_get_scholar_publications(
     }
 
     try:
-        async with httpx.AsyncClient() as client:
-            resp = await client.post(
-                f"{API_URL}/publications/linkedTo",
-                headers=HEADERS,
-                json=payload,
-                timeout=TIMEOUT,
-            )
-            resp.raise_for_status()
-            data = resp.json()
+        resp = await _http(ctx).post(f"{API_URL}/publications/linkedTo", json=payload)
+        resp.raise_for_status()
+        data = resp.json()
 
         pagination = data.get("pagination", {})
         total = pagination.get("total", 0) if pagination else 0
@@ -643,7 +659,9 @@ async def discover_get_scholar_publications(
         "openWorldHint": True,
     },
 )
-async def discover_get_scholar_grants(params: GetGrantsInput) -> GrantsResult:
+async def discover_get_scholar_grants(
+    params: GetGrantsInput, ctx: Context
+) -> GrantsResult:
     """Retrieve research grants for a University of Toronto scholar.
 
     Result JSON carries scholar_id, total, page, per_page, has_more, and a
@@ -664,15 +682,9 @@ async def discover_get_scholar_grants(params: GetGrantsInput) -> GrantsResult:
     }
 
     try:
-        async with httpx.AsyncClient() as client:
-            resp = await client.post(
-                f"{API_URL}/grants/linkedTo",
-                headers=HEADERS,
-                json=payload,
-                timeout=TIMEOUT,
-            )
-            resp.raise_for_status()
-            data = resp.json()
+        resp = await _http(ctx).post(f"{API_URL}/grants/linkedTo", json=payload)
+        resp.raise_for_status()
+        data = resp.json()
 
         pagination = data.get("pagination", {})
         total = pagination.get("total", 0) if pagination else 0
@@ -718,7 +730,7 @@ async def discover_get_scholar_grants(params: GetGrantsInput) -> GrantsResult:
     },
 )
 async def discover_get_filter_options(
-    params: GetFilterOptionsInput,
+    params: GetFilterOptionsInput, ctx: Context
 ) -> FilterOptionsResult:
     """Get the available filter values for scholar search (departments, tags, availability types).
 
@@ -766,15 +778,9 @@ async def discover_get_filter_options(
     }
 
     try:
-        async with httpx.AsyncClient() as client:
-            resp = await client.post(
-                f"{API_URL}/users",
-                headers=HEADERS,
-                json=payload,
-                timeout=TIMEOUT,
-            )
-            resp.raise_for_status()
-            data = resp.json()
+        resp = await _http(ctx).post(f"{API_URL}/users", json=payload)
+        resp.raise_for_status()
+        data = resp.json()
 
         response_filters = data.get("filters", [])
         target = next(
