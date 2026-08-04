@@ -13,6 +13,8 @@ from bs4 import BeautifulSoup
 from fastmcp import Context, FastMCP
 from fastmcp.exceptions import ToolError
 
+from .models import Grant, GrantsResult, Publication, PublicationsResult
+
 BASE_URL = "https://discover.research.utoronto.ca"
 API_URL = f"{BASE_URL}/api"
 
@@ -171,3 +173,131 @@ def format_scholar_summary(scholar: dict) -> dict:
         "availability": scholar.get("customFilterThree", []),
         "profile_url": f"{BASE_URL}/{scholar.get('discoveryUrlId', '')}",
     }
+
+
+# ─── Linked objects ─────────────────────────────────────────────────────────
+#
+# Publications, grants and professional activities are all *linked objects* in
+# the portal's terms: records attached to a scholar, served from one endpoint
+# shape and paged identically. What they share is the request and paging
+# protocol, not anything about publications or grants themselves.
+
+
+@dataclass(frozen=True)
+class Page:
+    """One page of linked objects, as the portal returned it.
+
+    Internal to this module — the raw records never cross the seam. `has_more`
+    is derived rather than stored, so it cannot disagree with the numbers it is
+    computed from. That arithmetic has been wrong before.
+    """
+
+    total: int
+    resources: list[dict]
+    start_from: int
+
+    @property
+    def has_more(self) -> bool:
+        return self.total > self.start_from + len(self.resources)
+
+
+async def _linked_objects(
+    ctx: Context, kind: str, scholar_id: str, page: int, per_page: int, sort: str
+) -> Page:
+    """Fetch one page of linked objects. `kind` is the portal endpoint segment."""
+    start_from = (page - 1) * per_page
+    payload = {
+        "objectId": scholar_id,
+        "category": "user",
+        "pagination": {"perPage": per_page, "startFrom": start_from},
+        "sort": sort,
+        "favouritesFirst": True,
+    }
+    try:
+        resp = await http_client(ctx).post(f"{API_URL}/{kind}/linkedTo", json=payload)
+        resp.raise_for_status()
+        data = resp.json()
+    except httpx.HTTPError as e:
+        raise portal_error(e) from e
+
+    pagination = data.get("pagination") or {}
+    return Page(
+        total=pagination.get("total", 0),
+        resources=data.get("resource") or [],
+        start_from=start_from,
+    )
+
+
+def _map_publication(record: dict) -> Publication:
+    date1 = record.get("date1") or {}
+    authors = ", ".join(
+        a.get("displayName", "")
+        for a in record.get("authors") or []
+        if a.get("displayName")
+    )
+    abstract = record.get("abstract")
+    return Publication(
+        id=record.get("discoveryId"),
+        title=record.get("title", ""),
+        type=record.get("objectTypeDisplayName", ""),
+        year=date1.get("year"),
+        authors=authors,
+        journal=record.get("journal", record.get("publisherName", "")),
+        abstract=strip_html(abstract)[:500] if abstract else "",
+        doi=record.get("doi", ""),
+        url=record.get("url", ""),
+    )
+
+
+def _map_grant(record: dict) -> Grant:
+    date1 = record.get("date1") or {}
+    date2 = record.get("date2") or {}
+    return Grant(
+        id=record.get("discoveryId"),
+        title=record.get("title", ""),
+        type=record.get("objectTypeDisplayName", ""),
+        funder=record.get("funderName", ""),
+        start_year=date1.get("year"),
+        end_year=date2.get("year"),
+        amount=record.get("amount", ""),
+    )
+
+
+async def fetch_publications(
+    ctx: Context, scholar_id: str, page: int, per_page: int, sort: str
+) -> PublicationsResult:
+    """Publications linked to a scholar, in published form."""
+    scholar_id = normalize_scholar_id(scholar_id)
+    result = await _linked_objects(
+        ctx, "publications", scholar_id, page, per_page, sort
+    )
+    return PublicationsResult(
+        scholar_id=scholar_id,
+        total=result.total,
+        page=page,
+        per_page=per_page,
+        has_more=result.has_more,
+        publications=[_map_publication(r) for r in result.resources],
+    )
+
+
+async def fetch_grants(
+    ctx: Context, scholar_id: str, page: int, per_page: int
+) -> GrantsResult:
+    """Grants linked to a scholar, in published form.
+
+    Ordering is fixed to date-descending rather than exposed, matching the tool
+    that calls it.
+    """
+    scholar_id = normalize_scholar_id(scholar_id)
+    result = await _linked_objects(
+        ctx, "grants", scholar_id, page, per_page, "dateDesc"
+    )
+    return GrantsResult(
+        scholar_id=scholar_id,
+        total=result.total,
+        page=page,
+        per_page=per_page,
+        has_more=result.has_more,
+        grants=[_map_grant(r) for r in result.resources],
+    )

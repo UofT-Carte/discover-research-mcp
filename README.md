@@ -190,7 +190,10 @@ Nothing in the suite touches the live portal.
 | `src/discover_research_mcp/portal.py` | Portal addresses, the shared HTTP client and its lifetime, retry policy, payload and error translation |
 | `src/discover_research_mcp/models.py` | Output models that drive the published schemas, and shared parameter types |
 
-`server.py` imports the other two; neither imports back.
+Dependencies run one way: `server.py` → `portal.py` → `models.py`. Nothing
+imports back. `portal.py` depends on `models.py` because it returns finished
+records rather than raw portal payloads, which is what keeps upstream field
+names out of `server.py`.
 
 The console script `discover-research-mcp` is declared in `pyproject.toml` and
 resolves to `main()`, which serves over stdio.

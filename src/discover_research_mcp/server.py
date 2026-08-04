@@ -30,6 +30,8 @@ from .portal import (
     RETRY_ATTEMPTS,
     RETRY_BASE_DELAY_SECONDS,
     RETRY_EXCEPTIONS,
+    fetch_grants,
+    fetch_publications,
     format_scholar_summary,
     http_client,
     lifespan,
@@ -324,64 +326,7 @@ async def discover_get_scholar_publications(
     scholar_id="17964". "Find their oldest publications first" adds
     sort="dateAsc". Either the numeric id or the URL-style id is accepted.
     """
-    scholar_id = normalize_scholar_id(scholar_id)
-    start_from = (page - 1) * per_page
-    payload = {
-        "objectId": scholar_id,
-        "category": "user",
-        "pagination": {"perPage": per_page, "startFrom": start_from},
-        "sort": sort,
-        "favouritesFirst": True,
-    }
-
-    try:
-        resp = await http_client(ctx).post(
-            f"{API_URL}/publications/linkedTo", json=payload
-        )
-        resp.raise_for_status()
-        data = resp.json()
-
-        pagination = data.get("pagination", {})
-        total = pagination.get("total", 0) if pagination else 0
-        resources = data.get("resource", [])
-
-        pubs = []
-        for p in resources:
-            date1 = p.get("date1", {})
-            year = date1.get("year") if date1 else None
-
-            authors_list = p.get("authors", [])
-            authors = ", ".join(
-                a.get("displayName", "") for a in authors_list if a.get("displayName")
-            )
-
-            pubs.append(
-                {
-                    "id": p.get("discoveryId"),
-                    "title": p.get("title", ""),
-                    "type": p.get("objectTypeDisplayName", ""),
-                    "year": year,
-                    "authors": authors,
-                    "journal": p.get("journal", p.get("publisherName", "")),
-                    "abstract": strip_html(p.get("abstract", ""))[:500]
-                    if p.get("abstract")
-                    else "",
-                    "doi": p.get("doi", ""),
-                    "url": p.get("url", ""),
-                }
-            )
-
-        return PublicationsResult(
-            scholar_id=scholar_id,
-            total=total,
-            page=page,
-            per_page=per_page,
-            has_more=total > start_from + len(resources),
-            publications=pubs,
-        )
-
-    except httpx.HTTPError as e:
-        raise portal_error(e) from e
+    return await fetch_publications(ctx, scholar_id, page, per_page, sort)
 
 
 @mcp.tool(
@@ -410,52 +355,7 @@ async def discover_get_scholar_grants(
     For example: "What grants does scholar 1545 hold?" becomes
     scholar_id="1545". Either the numeric id or the URL-style id is accepted.
     """
-    scholar_id = normalize_scholar_id(scholar_id)
-    start_from = (page - 1) * per_page
-    payload = {
-        "objectId": scholar_id,
-        "category": "user",
-        "pagination": {"perPage": per_page, "startFrom": start_from},
-        "sort": "dateDesc",
-        "favouritesFirst": True,
-    }
-
-    try:
-        resp = await http_client(ctx).post(f"{API_URL}/grants/linkedTo", json=payload)
-        resp.raise_for_status()
-        data = resp.json()
-
-        pagination = data.get("pagination", {})
-        total = pagination.get("total", 0) if pagination else 0
-        resources = data.get("resource", [])
-
-        grants = []
-        for g in resources:
-            date1 = g.get("date1", {})
-            date2 = g.get("date2", {})
-            grants.append(
-                {
-                    "id": g.get("discoveryId"),
-                    "title": g.get("title", ""),
-                    "type": g.get("objectTypeDisplayName", ""),
-                    "funder": g.get("funderName", ""),
-                    "start_year": date1.get("year") if date1 else None,
-                    "end_year": date2.get("year") if date2 else None,
-                    "amount": g.get("amount", ""),
-                }
-            )
-
-        return GrantsResult(
-            scholar_id=scholar_id,
-            total=total,
-            page=page,
-            per_page=per_page,
-            has_more=total > start_from + len(resources),
-            grants=grants,
-        )
-
-    except httpx.HTTPError as e:
-        raise portal_error(e) from e
+    return await fetch_grants(ctx, scholar_id, page, per_page)
 
 
 @mcp.tool(
