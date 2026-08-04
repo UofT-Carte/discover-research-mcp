@@ -13,7 +13,13 @@ from bs4 import BeautifulSoup
 from fastmcp import Context, FastMCP
 from fastmcp.exceptions import ToolError
 
-from .models import Grant, GrantsResult, Publication, PublicationsResult
+from .models import (
+    Grant,
+    GrantsResult,
+    Publication,
+    PublicationsResult,
+    ScholarProfile,
+)
 
 BASE_URL = "https://discover.research.utoronto.ca"
 API_URL = f"{BASE_URL}/api"
@@ -129,15 +135,21 @@ def portal_error(e: httpx.HTTPError) -> ToolError:
     return ToolError(f"Could not reach the portal — {type(e).__name__}: {e}")
 
 
-def unwrap(value: object, key: str) -> str | None:
-    """Pull a scalar out of a field the portal may return wrapped.
+# Profile fields the portal wraps in an object, and the key holding the scalar
+# (observed 2026-08-04). Knowing which fields are wrapped is this module's job;
+# callers ask for a field by name and get a scalar back.
+_WRAPPED_PROFILE_FIELDS = {
+    "emailAddress": "address",
+    "orcid": "value",
+    "elementsUserProfileUrl": "uri",
+}
 
-    Some profile fields arrive as objects rather than strings — `orcid` as
-    {"value", "uri"} and `emailAddress` as {"address"} (observed 2026-08-04).
-    Returns the value as-is when it is already scalar.
-    """
+
+def _scalar(data: dict, field: str) -> str | None:
+    """Read a profile field that may arrive wrapped in an object."""
+    value = data.get(field)
     if isinstance(value, dict):
-        return value.get(key)
+        return value.get(_WRAPPED_PROFILE_FIELDS[field])
     return value
 
 
@@ -301,3 +313,62 @@ async def fetch_grants(
         has_more=result.has_more,
         grants=[_map_grant(r) for r in result.resources],
     )
+
+
+def _map_profile(data: dict, numeric_id: str) -> ScholarProfile:
+    """Translate a portal profile payload into a published profile."""
+    linked = data.get("linkedObjectIds") or {}
+    tags = [t["value"] for t in data.get("tags", {}).get("explicit", [])]
+    degrees = [
+        {
+            "name": d.get("name", ""),
+            "institution": d.get("institution", {}).get("organisation", ""),
+        }
+        for d in data.get("degrees") or []
+    ]
+    phones = data.get("phoneNumbers") or []
+    addresses = data.get("addresses") or []
+    teaching = data.get("tabSummaryTeachingActivities") or {}
+    grants_summary = data.get("tabSummaryGrants") or {}
+
+    # `or []` rather than a .get default, so a null collection is handled as
+    # well as a missing one. The sampled profiles sent lists, but a default
+    # only covers the absent-key case.
+    return ScholarProfile(
+        id=data.get("discoveryId"),
+        name=data.get("firstNameLastName"),
+        profile_url=f"{BASE_URL}/{data.get('discoveryUrlId', numeric_id)}",
+        bio=strip_html(data.get("tabSummaryAbout", {}).get("value", "")),
+        email=_scalar(data, "emailAddress"),
+        phone=phones[0].get("number", "") if phones else "",
+        address=addresses[0].get("singleLineFormat", "") if addresses else "",
+        orcid=_scalar(data, "orcid"),
+        elements_profile_url=_scalar(data, "elementsUserProfileUrl"),
+        positions=data.get("positions") or [],
+        academic_appointments=data.get("academicAppointments") or [],
+        non_academic_appointments=data.get("nonAcademicAppointments") or [],
+        degrees=degrees,
+        research_topics=tags,
+        availability=data.get("customFilterThree") or [],
+        personal_websites=data.get("personalWebsites") or [],
+        publication_count=len(linked.get("publications") or []),
+        grant_count=len(linked.get("grants") or []),
+        professional_activity_count=len(linked.get("professionalActivities") or []),
+        teaching_summary=strip_html(teaching.get("value", "")) if teaching else "",
+        grants_summary=strip_html(grants_summary.get("value", ""))
+        if grants_summary
+        else "",
+    )
+
+
+async def fetch_scholar(ctx: Context, scholar_id: str) -> ScholarProfile:
+    """A scholar's full profile, in published form."""
+    numeric_id = normalize_scholar_id(scholar_id)
+    try:
+        resp = await http_client(ctx).get(f"{API_URL}/users/{numeric_id}")
+        resp.raise_for_status()
+        data = resp.json()
+    except httpx.HTTPError as e:
+        raise portal_error(e) from e
+
+    return _map_profile(data, numeric_id)

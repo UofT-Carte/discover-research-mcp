@@ -25,20 +25,17 @@ from .models import (
 )
 from .portal import (
     API_URL,
-    BASE_URL,
     DEFAULT_FILTERS,
     RETRY_ATTEMPTS,
     RETRY_BASE_DELAY_SECONDS,
     RETRY_EXCEPTIONS,
     fetch_grants,
     fetch_publications,
+    fetch_scholar,
     format_scholar_summary,
     http_client,
     lifespan,
-    normalize_scholar_id,
     portal_error,
-    strip_html,
-    unwrap,
 )
 
 # A per-attempt ceiling on everything a tool does, HTTP or not. Set above the
@@ -235,61 +232,7 @@ async def discover_get_scholar(ctx: Context, scholar_id: ScholarId) -> ScholarPr
     scholar_id="17964". Either the numeric id or the URL-style id
     ("17964-michael-guerzhoy") is accepted.
     """
-    numeric_id = normalize_scholar_id(scholar_id)
-
-    try:
-        resp = await http_client(ctx).get(f"{API_URL}/users/{numeric_id}")
-        resp.raise_for_status()
-        data = resp.json()
-
-        linked = data.get("linkedObjectIds", {})
-        tags = [t["value"] for t in data.get("tags", {}).get("explicit", [])]
-        degrees = [
-            {
-                "name": d.get("name", ""),
-                "institution": d.get("institution", {}).get("organisation", ""),
-            }
-            for d in data.get("degrees", [])
-        ]
-        phones = data.get("phoneNumbers", [])
-        phone = phones[0].get("number", "") if phones else ""
-        addresses = data.get("addresses", [])
-        address = addresses[0].get("singleLineFormat", "") if addresses else ""
-
-        teaching = data.get("tabSummaryTeachingActivities", {})
-        grants_summary = data.get("tabSummaryGrants", {})
-
-        # `or []` rather than a .get default, so a null collection is handled
-        # as well as a missing one. The sampled profiles sent lists, but a
-        # default only covers the absent-key case.
-        return ScholarProfile(
-            id=data.get("discoveryId"),
-            name=data.get("firstNameLastName"),
-            profile_url=f"{BASE_URL}/{data.get('discoveryUrlId', numeric_id)}",
-            bio=strip_html(data.get("tabSummaryAbout", {}).get("value", "")),
-            email=unwrap(data.get("emailAddress"), "address"),
-            phone=phone,
-            address=address,
-            orcid=unwrap(data.get("orcid"), "value"),
-            elements_profile_url=unwrap(data.get("elementsUserProfileUrl"), "uri"),
-            positions=data.get("positions") or [],
-            academic_appointments=data.get("academicAppointments") or [],
-            non_academic_appointments=data.get("nonAcademicAppointments") or [],
-            degrees=degrees,
-            research_topics=tags,
-            availability=data.get("customFilterThree") or [],
-            personal_websites=data.get("personalWebsites") or [],
-            publication_count=len(linked.get("publications") or []),
-            grant_count=len(linked.get("grants") or []),
-            professional_activity_count=len(linked.get("professionalActivities") or []),
-            teaching_summary=strip_html(teaching.get("value", "")) if teaching else "",
-            grants_summary=strip_html(grants_summary.get("value", ""))
-            if grants_summary
-            else "",
-        )
-
-    except httpx.HTTPError as e:
-        raise portal_error(e) from e
+    return await fetch_scholar(ctx, scholar_id)
 
 
 @mcp.tool(
