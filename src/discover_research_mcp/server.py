@@ -56,11 +56,28 @@ def build_response_cache() -> ResponseCachingMiddleware:
     past it and is never written. That is why portal failures raise rather than
     return — returning an error value here would memoise it for the full TTL.
 
-    Exposed as a factory so tests can reset cache state between cases.
+    Built by a factory so `reset_response_cache` can swap in a fresh instance.
     """
     return ResponseCachingMiddleware(
         call_tool_settings={"enabled": True, "ttl": RESPONSE_CACHE_TTL_SECONDS},
     )
+
+
+def reset_response_cache() -> None:
+    """Discard everything the response cache holds.
+
+    Exists for test isolation. The cache lives on the module-level server, so
+    entries otherwise survive between tests and one test priming a query
+    starves the next of the upstream request it asserts on.
+
+    FastMCP 3.4.5 exposes no public clear, and destroying the backing store
+    leaves it unusable, so the middleware instance is replaced. Matching on the
+    imported class rather than a class-name string means a rename is a type
+    error here, not a fixture that silently stops resetting.
+    """
+    for index, entry in enumerate(mcp.middleware):
+        if isinstance(entry, ResponseCachingMiddleware):
+            mcp.middleware[index] = build_response_cache()
 
 
 mcp = FastMCP("discover_research_mcp", lifespan=lifespan)

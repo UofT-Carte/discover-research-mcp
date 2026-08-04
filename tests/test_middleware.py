@@ -8,6 +8,8 @@ import httpx
 import pytest
 from pytest_httpx import HTTPXMock
 
+from discover_research_mcp.server import reset_response_cache
+
 SEARCH_RESPONSE = {
     "pagination": {"startFrom": 0, "perPage": 20, "total": 0},
     "resource": [],
@@ -91,3 +93,26 @@ async def test_failed_calls_are_not_cached(call_tool, httpx_mock: HTTPXMock):
 
     assert first.is_error is True
     assert second.is_error is False, "a cached error was replayed"
+
+
+@pytest.mark.asyncio
+async def test_resetting_the_cache_actually_empties_it(
+    call_tool, httpx_mock: HTTPXMock
+):
+    """The isolation every other test depends on, exercised directly.
+
+    Test isolation was previously enforced by a fixture that found its target
+    with a `getattr` default and a class-name string, so it could stop working
+    without anything failing. Nothing verified the reset itself.
+    """
+    httpx_mock.add_response(json=SEARCH_RESPONSE, is_reusable=True)
+    args = {"query": "reset-me"}
+
+    await call_tool("discover_search_scholars", args)
+    await call_tool("discover_search_scholars", args)
+    assert len(httpx_mock.get_requests()) == 1, "second call should have been cached"
+
+    reset_response_cache()
+
+    await call_tool("discover_search_scholars", args)
+    assert len(httpx_mock.get_requests()) == 2, "cache was not emptied by the reset"
