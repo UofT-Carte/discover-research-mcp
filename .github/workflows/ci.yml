@@ -1,0 +1,67 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+concurrency:
+  # A newer push to the same branch supersedes this run.
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  check:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+
+    steps:
+      - uses: actions/checkout@v7
+
+      - uses: astral-sh/setup-uv@v9
+        with:
+          enable-cache: true
+
+      - name: Install dependencies
+        run: uv sync --locked
+
+      - name: Lint
+        run: uv run ruff check .
+
+      - name: Check formatting
+        run: uv run ruff format --check .
+
+      - name: Test
+        # The suite mocks the portal at the HTTP boundary, so nothing here
+        # reaches the live site and CI cannot be broken by it being down.
+        run: uv run pytest -q
+
+      - name: Build the package
+        # The published install path is `uvx --from git+<repo>`, which builds
+        # from source. A build failure would break that for every user while
+        # leaving tests green, so it is checked on every run.
+        run: uv build
+
+      - name: Verify the console entry point
+        # Installs the built wheel into a throwaway environment and loads the
+        # server the way a client does, catching packaging mistakes that only
+        # appear outside the dev environment — a module left out of the wheel,
+        # a bad [project.scripts] target — which tests alone would not see.
+        run: |
+          WHEEL=$(ls dist/*.whl | head -1)
+          uv run --isolated --no-project --with "$WHEEL" python - <<'EOF'
+          import asyncio
+          from fastmcp import Client
+          from discover_research_mcp.server import main, mcp
+
+          assert callable(main), "console entry point is not callable"
+
+          async def check():
+              async with Client(mcp) as client:
+                  tools = await client.list_tools()
+                  print(f"entry point resolves; {len(tools)} tools registered")
+                  assert len(tools) == 5, f"expected 5 tools, got {len(tools)}"
+
+          asyncio.run(check())
+          EOF
