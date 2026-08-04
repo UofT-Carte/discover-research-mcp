@@ -41,10 +41,10 @@ def call_tool():
     `is_error` — the flag a calling model actually sees.
     """
 
-    async def _call(name: str, params: dict, *, raise_on_error: bool = False):
+    async def _call(name: str, arguments: dict, *, raise_on_error: bool = False):
         async with Client(mcp) as client:
             return await client.call_tool(
-                name, {"params": params}, raise_on_error=raise_on_error
+                name, arguments, raise_on_error=raise_on_error
             )
 
     return _call

@@ -36,13 +36,11 @@ async def test_http_client_is_not_constructed_per_call(
     httpx_mock.add_response(json=SEARCH_RESPONSE, is_reusable=True)
 
     async with Client(mcp) as client:
-        await client.call_tool("discover_search_scholars", {"params": {"query": "a"}})
+        await client.call_tool("discover_search_scholars", {"query": "a"})
         after_first = len(constructed)
 
         for query in ("b", "c", "d"):
-            await client.call_tool(
-                "discover_search_scholars", {"params": {"query": query}}
-            )
+            await client.call_tool("discover_search_scholars", {"query": query})
 
     assert len(constructed) == after_first, (
         f"{len(constructed) - after_first} extra HTTP clients built for 3 further "

@@ -7,6 +7,7 @@ publications, and research grants.
 
 from contextlib import asynccontextmanager
 from dataclasses import dataclass
+from typing import Annotated
 
 import httpx
 from bs4 import BeautifulSoup
@@ -14,7 +15,7 @@ from fastmcp import Context, FastMCP
 from fastmcp.exceptions import ToolError
 from fastmcp.server.middleware.caching import ResponseCachingMiddleware
 from fastmcp.server.middleware.error_handling import RetryMiddleware
-from pydantic import BaseModel, ConfigDict, Field, field_validator
+from pydantic import BaseModel, Field, StringConstraints
 
 BASE_URL = "https://discover.research.utoronto.ca"
 API_URL = f"{BASE_URL}/api"
@@ -213,114 +214,17 @@ def _format_scholar_summary(scholar: dict) -> dict:
     }
 
 
-# ─── Input models ───────────────────────────────────────────────────────────────
+# ─── Shared parameter types ─────────────────────────────────────────────────────
 
-
-class SearchScholarsInput(BaseModel):
-    model_config = ConfigDict(
-        str_strip_whitespace=True, validate_assignment=True, extra="forbid"
-    )
-
-    query: str = Field(
-        ...,
-        description="Search query — name, subject, discipline, or topic (e.g. 'climate change', 'Susan Abbey', 'machine learning')",
-        min_length=1,
-        max_length=200,
-    )
-    search_by: str = Field(
-        default="text",
-        description="How to interpret the query: 'text' for full-text keyword search, 'name' for scholar name search",
-        pattern=r"^(text|name)$",
-    )
-    department_filter: str | None = Field(
-        default=None,
-        description="Filter results to a specific faculty/department (e.g. 'Faculty of Arts and Science, Department of Chemistry'). Use exact values returned by discover_get_filter_options.",
-    )
-    tag_filter: str | None = Field(
-        default=None,
-        description="Filter results by a research tag/topic (e.g. 'Machine learning', 'Cancer'). Use exact values from discover_get_filter_options.",
-    )
-    availability_filter: str | None = Field(
-        default=None,
-        description="Filter by availability type (e.g. 'Media enquiries', 'Industry Projects'). Use exact values from discover_get_filter_options.",
-    )
-    page: int = Field(default=1, description="Page number (1-indexed)", ge=1)
-    per_page: int = Field(
-        default=20, description="Results per page (max 100)", ge=1, le=100
-    )
-
-    @field_validator("query")
-    @classmethod
-    def validate_query(cls, v: str) -> str:
-        if not v.strip():
-            raise ValueError("Query cannot be empty")
-        return v.strip()
-
-
-class GetScholarInput(BaseModel):
-    model_config = ConfigDict(
-        str_strip_whitespace=True, validate_assignment=True, extra="forbid"
-    )
-
-    scholar_id: str = Field(
-        ...,
-        description="The numeric scholar ID from search results (e.g. '17964') or the full URL ID (e.g. '17964-michael-guerzhoy')",
-        min_length=1,
-    )
-
-
-class GetPublicationsInput(BaseModel):
-    model_config = ConfigDict(
-        str_strip_whitespace=True, validate_assignment=True, extra="forbid"
-    )
-
-    scholar_id: str = Field(
-        ...,
-        description="The numeric scholar ID (e.g. '17964'). Use the 'id' field from search results.",
-        min_length=1,
-    )
-    page: int = Field(default=1, description="Page number (1-indexed)", ge=1)
-    per_page: int = Field(
-        default=25, description="Results per page (max 100)", ge=1, le=100
-    )
-    sort: str = Field(
-        default="dateDesc",
-        description="Sort order: 'dateDesc' (newest first), 'dateAsc' (oldest first)",
-        pattern=r"^(dateDesc|dateAsc)$",
-    )
-
-
-class GetGrantsInput(BaseModel):
-    model_config = ConfigDict(
-        str_strip_whitespace=True, validate_assignment=True, extra="forbid"
-    )
-
-    scholar_id: str = Field(
-        ...,
-        description="The numeric scholar ID (e.g. '1545'). Use the 'id' field from search results.",
-        min_length=1,
-    )
-    page: int = Field(default=1, description="Page number (1-indexed)", ge=1)
-    per_page: int = Field(
-        default=25, description="Results per page (max 100)", ge=1, le=100
-    )
-
-
-class GetFilterOptionsInput(BaseModel):
-    model_config = ConfigDict(
-        str_strip_whitespace=True, validate_assignment=True, extra="forbid"
-    )
-
-    query: str = Field(
-        default="",
-        description="Optional search query to scope the filter options (leave empty for global options)",
-        max_length=200,
-    )
-    filter_type: str = Field(
-        default="tags",
-        description="Which filter to retrieve options for: 'tags' (research topics), 'department' (faculty/unit), 'customFilterThree' (availability)",
-        pattern=r"^(tags|department|customFilterThree|customFilterFour|customFilterFive)$",
-    )
+ScholarId = Annotated[
+    str,
+    StringConstraints(strip_whitespace=True, min_length=1),
+    Field(
+        description="Scholar ID from search results — either the numeric form (e.g. '17964') or the URL-style form (e.g. '17964-michael-guerzhoy'). Both are accepted by every scholar tool."
+    ),
+]
+PageNumber = Annotated[int, Field(description="Page number (1-indexed)", ge=1)]
+PageSize = Annotated[int, Field(description="Results per page (max 100)", ge=1, le=100)]
 
 
 # ─── Output models ──────────────────────────────────────────────────────────────
@@ -462,7 +366,41 @@ class FilterOptionsResult(BaseModel):
     },
 )
 async def discover_search_scholars(
-    params: SearchScholarsInput, ctx: Context
+    ctx: Context,
+    query: Annotated[
+        str,
+        StringConstraints(strip_whitespace=True, min_length=1, max_length=200),
+        Field(
+            description="Search query — name, subject, discipline, or topic (e.g. 'climate change', 'Susan Abbey', 'machine learning')"
+        ),
+    ],
+    search_by: Annotated[
+        str,
+        Field(
+            description="How to interpret the query: 'text' for full-text keyword search, 'name' for scholar name search",
+            pattern=r"^(text|name)$",
+        ),
+    ] = "text",
+    department_filter: Annotated[
+        str | None,
+        Field(
+            description="Filter results to a specific faculty/department (e.g. 'Faculty of Arts and Science, Department of Chemistry'). Use exact values returned by discover_get_filter_options."
+        ),
+    ] = None,
+    tag_filter: Annotated[
+        str | None,
+        Field(
+            description="Filter results by a research tag/topic (e.g. 'Machine learning', 'Cancer'). Use exact values from discover_get_filter_options."
+        ),
+    ] = None,
+    availability_filter: Annotated[
+        str | None,
+        Field(
+            description="Filter by availability type (e.g. 'Media enquiries', 'Industry Projects'). Use exact values from discover_get_filter_options."
+        ),
+    ] = None,
+    page: PageNumber = 1,
+    per_page: PageSize = 20,
 ) -> SearchResult:
     """Search for University of Toronto scholars by name, subject, discipline, or topic.
 
@@ -481,33 +419,33 @@ async def discover_search_scholars(
     becomes query="machine learning" with department_filter set to the exact
     faculty string from discover_get_filter_options.
     """
-    start_from = (params.page - 1) * params.per_page
+    start_from = (page - 1) * per_page
 
     filters = []
     for f in DEFAULT_FILTERS:
         entry = dict(f)
         # Apply tag filter
-        if params.tag_filter and f["name"] == "tags":
+        if tag_filter and f["name"] == "tags":
             entry["useValuesToFilter"] = True
             entry["matchDocsWithMissingValues"] = False
-            entry["values"] = [params.tag_filter]
+            entry["values"] = [tag_filter]
         # Apply department filter
-        elif params.department_filter and f["name"] == "department":
+        elif department_filter and f["name"] == "department":
             entry["useValuesToFilter"] = True
             entry["matchDocsWithMissingValues"] = False
-            entry["values"] = [params.department_filter]
+            entry["values"] = [department_filter]
         # Apply availability filter (customFilterThree)
-        elif params.availability_filter and f["name"] == "customFilterThree":
+        elif availability_filter and f["name"] == "customFilterThree":
             entry["useValuesToFilter"] = True
             entry["matchDocsWithMissingValues"] = False
-            entry["values"] = [params.availability_filter]
+            entry["values"] = [availability_filter]
         filters.append(entry)
 
     payload = {
         "params": {
-            "by": params.search_by,
+            "by": search_by,
             "category": "user",
-            "text": params.query,
+            "text": query,
         },
         "filters": filters,
         # The portal defaults to 25 records when no page size is expressed, so
@@ -516,7 +454,7 @@ async def discover_search_scholars(
         # alongside it, but pagination.startFrom alone is not verified to drive
         # the offset.
         "startFrom": start_from,
-        "pagination": {"perPage": params.per_page, "startFrom": start_from},
+        "pagination": {"perPage": per_page, "startFrom": start_from},
     }
 
     try:
@@ -532,8 +470,8 @@ async def discover_search_scholars(
 
         return SearchResult(
             total=total,
-            page=params.page,
-            per_page=params.per_page,
+            page=page,
+            per_page=per_page,
             has_more=total > start_from + len(resources),
             scholars=scholars,
         )
@@ -553,7 +491,7 @@ async def discover_search_scholars(
         "openWorldHint": True,
     },
 )
-async def discover_get_scholar(params: GetScholarInput, ctx: Context) -> ScholarProfile:
+async def discover_get_scholar(ctx: Context, scholar_id: ScholarId) -> ScholarProfile:
     """Retrieve the full profile for a University of Toronto scholar.
 
     Returns bio, positions, degrees, contact details, research areas, and counts
@@ -569,7 +507,7 @@ async def discover_get_scholar(params: GetScholarInput, ctx: Context) -> Scholar
     scholar_id="17964". Either the numeric id or the URL-style id
     ("17964-michael-guerzhoy") is accepted.
     """
-    numeric_id = _normalize_scholar_id(params.scholar_id)
+    numeric_id = _normalize_scholar_id(scholar_id)
 
     try:
         resp = await _http(ctx).get(f"{API_URL}/users/{numeric_id}")
@@ -638,7 +576,17 @@ async def discover_get_scholar(params: GetScholarInput, ctx: Context) -> Scholar
     },
 )
 async def discover_get_scholar_publications(
-    params: GetPublicationsInput, ctx: Context
+    ctx: Context,
+    scholar_id: ScholarId,
+    page: PageNumber = 1,
+    per_page: PageSize = 25,
+    sort: Annotated[
+        str,
+        Field(
+            description="Sort order: 'dateDesc' (newest first), 'dateAsc' (oldest first)",
+            pattern=r"^(dateDesc|dateAsc)$",
+        ),
+    ] = "dateDesc",
 ) -> PublicationsResult:
     """Retrieve publications (scholarly and creative works) for a U of T scholar.
 
@@ -650,13 +598,13 @@ async def discover_get_scholar_publications(
     scholar_id="17964". "Find their oldest publications first" adds
     sort="dateAsc". Either the numeric id or the URL-style id is accepted.
     """
-    scholar_id = _normalize_scholar_id(params.scholar_id)
-    start_from = (params.page - 1) * params.per_page
+    scholar_id = _normalize_scholar_id(scholar_id)
+    start_from = (page - 1) * per_page
     payload = {
         "objectId": scholar_id,
         "category": "user",
-        "pagination": {"perPage": params.per_page, "startFrom": start_from},
-        "sort": params.sort,
+        "pagination": {"perPage": per_page, "startFrom": start_from},
+        "sort": sort,
         "favouritesFirst": True,
     }
 
@@ -698,8 +646,8 @@ async def discover_get_scholar_publications(
         return PublicationsResult(
             scholar_id=scholar_id,
             total=total,
-            page=params.page,
-            per_page=params.per_page,
+            page=page,
+            per_page=per_page,
             has_more=total > start_from + len(resources),
             publications=pubs,
         )
@@ -720,7 +668,10 @@ async def discover_get_scholar_publications(
     },
 )
 async def discover_get_scholar_grants(
-    params: GetGrantsInput, ctx: Context
+    ctx: Context,
+    scholar_id: ScholarId,
+    page: PageNumber = 1,
+    per_page: PageSize = 25,
 ) -> GrantsResult:
     """Retrieve research grants for a University of Toronto scholar.
 
@@ -731,12 +682,12 @@ async def discover_get_scholar_grants(
     For example: "What grants does scholar 1545 hold?" becomes
     scholar_id="1545". Either the numeric id or the URL-style id is accepted.
     """
-    scholar_id = _normalize_scholar_id(params.scholar_id)
-    start_from = (params.page - 1) * params.per_page
+    scholar_id = _normalize_scholar_id(scholar_id)
+    start_from = (page - 1) * per_page
     payload = {
         "objectId": scholar_id,
         "category": "user",
-        "pagination": {"perPage": params.per_page, "startFrom": start_from},
+        "pagination": {"perPage": per_page, "startFrom": start_from},
         "sort": "dateDesc",
         "favouritesFirst": True,
     }
@@ -769,8 +720,8 @@ async def discover_get_scholar_grants(
         return GrantsResult(
             scholar_id=scholar_id,
             total=total,
-            page=params.page,
-            per_page=params.per_page,
+            page=page,
+            per_page=per_page,
             has_more=total > start_from + len(resources),
             grants=grants,
         )
@@ -791,7 +742,21 @@ async def discover_get_scholar_grants(
     },
 )
 async def discover_get_filter_options(
-    params: GetFilterOptionsInput, ctx: Context
+    ctx: Context,
+    query: Annotated[
+        str,
+        StringConstraints(strip_whitespace=True, max_length=200),
+        Field(
+            description="Optional search query to scope the filter options (leave empty for global options)"
+        ),
+    ] = "",
+    filter_type: Annotated[
+        str,
+        Field(
+            description="Which filter to retrieve options for: 'tags' (research topics), 'department' (faculty/unit), 'customFilterThree' (availability)",
+            pattern=r"^(tags|department|customFilterThree|customFilterFour|customFilterFive)$",
+        ),
+    ] = "tags",
 ) -> FilterOptionsResult:
     """Get the available filter values for scholar search (departments, tags, availability types).
 
@@ -832,7 +797,7 @@ async def discover_get_filter_options(
         "params": {
             "by": "text",
             "category": "user",
-            "text": params.query,
+            "text": query,
         },
         "filters": filters,
         "startFrom": 0,
@@ -845,14 +810,14 @@ async def discover_get_filter_options(
 
         response_filters = data.get("filters", [])
         target = next(
-            (f for f in response_filters if f.get("name") == params.filter_type), None
+            (f for f in response_filters if f.get("name") == filter_type), None
         )
 
         if not target:
             return FilterOptionsResult(
-                filter_type=params.filter_type,
-                query=params.query,
-                note=f"No options found for filter type '{params.filter_type}'",
+                filter_type=filter_type,
+                query=query,
+                note=f"No options found for filter type '{filter_type}'",
             )
 
         options = [
@@ -861,8 +826,8 @@ async def discover_get_filter_options(
         ]
 
         return FilterOptionsResult(
-            filter_type=params.filter_type,
-            query=params.query,
+            filter_type=filter_type,
+            query=query,
             options=options,
         )
 
