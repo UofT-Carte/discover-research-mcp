@@ -9,8 +9,8 @@ import json
 
 import httpx
 from bs4 import BeautifulSoup
-from mcp.server.fastmcp import FastMCP
-from mcp.server.fastmcp.exceptions import ToolError
+from fastmcp import FastMCP
+from fastmcp.exceptions import ToolError
 from pydantic import BaseModel, ConfigDict, Field, field_validator
 
 mcp = FastMCP("discover_research_mcp")
@@ -242,44 +242,20 @@ class GetFilterOptionsInput(BaseModel):
 async def discover_search_scholars(params: SearchScholarsInput) -> str:
     """Search for University of Toronto scholars by name, subject, discipline, or topic.
 
-    Returns a paginated list of matching scholar profiles with basic info.
-    Use discover_get_scholar to retrieve full details for a specific scholar.
+    Returns a paginated list of matching scholar profiles with basic info. Use
+    discover_get_scholar for full details on one scholar, and
+    discover_get_filter_options to look up exact values for the filters.
 
-    Args:
-        params (SearchScholarsInput):
-            - query (str): Search text — can be a name, topic, or keyword
-            - search_by (str): 'text' for keyword search, 'name' for name search (default: 'text')
-            - department_filter (Optional[str]): Exact department name to filter by
-            - tag_filter (Optional[str]): Exact research tag to filter by
-            - availability_filter (Optional[str]): Exact availability type to filter by
-            - page (int): Page number, 1-indexed (default: 1)
-            - per_page (int): Results per page, 1–100 (default: 20)
+    Result JSON carries total, page, per_page, has_more, and a scholars list
+    whose entries each have: id (pass this to the other scholar tools), url_id,
+    name, positions ("Department — Position Title"), tags, bio_excerpt,
+    availability, and profile_url.
 
-    Returns:
-        str: JSON with:
-        {
-            "total": int,
-            "page": int,
-            "per_page": int,
-            "has_more": bool,
-            "scholars": [
-                {
-                    "id": str,            # numeric ID for use with other tools
-                    "url_id": str,        # slug used in the profile URL
-                    "name": str,
-                    "positions": [str],   # "Department — Position Title"
-                    "tags": [str],        # research topic tags
-                    "bio_excerpt": str,
-                    "availability": [str],
-                    "profile_url": str
-                }
-            ]
-        }
-
-    Examples:
-        - "Find scholars working on climate change" → query="climate change"
-        - "Search for professor Susan Abbey" → query="Susan Abbey", search_by="name"
-        - "Find ML researchers in Engineering" → query="machine learning", department_filter="Faculty of Applied Science and Engineering..."
+    For example: "Find scholars working on climate change" becomes
+    query="climate change". "Search for professor Susan Abbey" becomes
+    query="Susan Abbey", search_by="name". "Find ML researchers in Engineering"
+    becomes query="machine learning" with department_filter set to the exact
+    faculty string from discover_get_filter_options.
     """
     start_from = (params.page - 1) * params.per_page
 
@@ -362,40 +338,18 @@ async def discover_search_scholars(params: SearchScholarsInput) -> str:
 async def discover_get_scholar(params: GetScholarInput) -> str:
     """Retrieve the full profile for a University of Toronto scholar.
 
-    Returns detailed information including bio, positions, degrees, contact details,
-    research areas, and counts of linked publications and grants.
+    Returns bio, positions, degrees, contact details, research areas, and counts
+    of linked publications and grants.
 
-    Args:
-        params (GetScholarInput):
-            - scholar_id (str): Numeric ID (e.g. '17964') from search results
+    Result JSON carries: id, name, profile_url, bio (plain text), email, phone,
+    address, orcid, positions, academic_appointments, degrees, research_topics,
+    availability, personal_websites, elements_profile_url, publication_count,
+    grant_count, teaching_summary, and grants_summary.
 
-    Returns:
-        str: JSON with full scholar profile:
-        {
-            "id": str,
-            "name": str,
-            "profile_url": str,
-            "bio": str,          # plain-text biography
-            "email": str,
-            "phone": str,
-            "address": str,
-            "orcid": str,
-            "positions": [{"position": str, "department": str}],
-            "academic_appointments": [...],
-            "degrees": [{"name": str, "institution": str}],
-            "research_topics": [str],     # tags
-            "availability": [str],        # e.g. "Media enquiries"
-            "personal_websites": [{"type": str, "label": str, "url": str}],
-            "elements_profile_url": str,
-            "publication_count": int,
-            "grant_count": int,
-            "teaching_summary": str,
-            "grants_summary": str
-        }
-
-    Examples:
-        - After finding a scholar in search results, use their 'id' here for full details
-        - "Get full profile for scholar 17964" → scholar_id="17964"
+    For example: after finding a scholar in search results, pass their id here
+    for full detail — "Get the full profile for scholar 17964" becomes
+    scholar_id="17964". Either the numeric id or the URL-style id
+    ("17964-michael-guerzhoy") is accepted.
     """
     numeric_id = _normalize_scholar_id(params.scholar_id)
 
@@ -474,39 +428,13 @@ async def discover_get_scholar(params: GetScholarInput) -> str:
 async def discover_get_scholar_publications(params: GetPublicationsInput) -> str:
     """Retrieve publications (scholarly and creative works) for a U of T scholar.
 
-    Args:
-        params (GetPublicationsInput):
-            - scholar_id (str): Numeric scholar ID (e.g. '17964')
-            - page (int): Page number, 1-indexed (default: 1)
-            - per_page (int): Results per page, 1–100 (default: 25)
-            - sort (str): 'dateDesc' newest first or 'dateAsc' oldest first (default: 'dateDesc')
+    Result JSON carries scholar_id, total, page, per_page, has_more, and a
+    publications list whose entries each have: id, title, type (e.g. "Journal
+    article", "Book chapter"), year, authors, journal, abstract, doi, and url.
 
-    Returns:
-        str: JSON with:
-        {
-            "scholar_id": str,
-            "total": int,
-            "page": int,
-            "per_page": int,
-            "has_more": bool,
-            "publications": [
-                {
-                    "id": str,
-                    "title": str,
-                    "type": str,          # e.g. "Journal article", "Book chapter"
-                    "year": int,
-                    "authors": str,
-                    "journal": str,
-                    "abstract": str,
-                    "doi": str,
-                    "url": str
-                }
-            ]
-        }
-
-    Examples:
-        - "List recent papers by scholar 17964" → scholar_id="17964"
-        - "Find oldest publications" → scholar_id="17964", sort="dateAsc"
+    For example: "List recent papers by scholar 17964" becomes
+    scholar_id="17964". "Find their oldest publications first" adds
+    sort="dateAsc". Either the numeric id or the URL-style id is accepted.
     """
     scholar_id = _normalize_scholar_id(params.scholar_id)
     start_from = (params.page - 1) * params.per_page
@@ -586,35 +514,12 @@ async def discover_get_scholar_publications(params: GetPublicationsInput) -> str
 async def discover_get_scholar_grants(params: GetGrantsInput) -> str:
     """Retrieve research grants for a University of Toronto scholar.
 
-    Args:
-        params (GetGrantsInput):
-            - scholar_id (str): Numeric scholar ID (e.g. '1545')
-            - page (int): Page number, 1-indexed (default: 1)
-            - per_page (int): Results per page, 1–100 (default: 25)
+    Result JSON carries scholar_id, total, page, per_page, has_more, and a
+    grants list whose entries each have: id, title, type (e.g. "Sponsored
+    Research Agreement"), funder, start_year, end_year, and amount.
 
-    Returns:
-        str: JSON with:
-        {
-            "scholar_id": str,
-            "total": int,
-            "page": int,
-            "per_page": int,
-            "has_more": bool,
-            "grants": [
-                {
-                    "id": str,
-                    "title": str,
-                    "type": str,          # e.g. "Sponsored Research Agreement"
-                    "funder": str,
-                    "start_year": int,
-                    "end_year": int,
-                    "amount": str
-                }
-            ]
-        }
-
-    Examples:
-        - "What grants does scholar 1545 have?" → scholar_id="1545"
+    For example: "What grants does scholar 1545 hold?" becomes
+    scholar_id="1545". Either the numeric id or the URL-style id is accepted.
     """
     scholar_id = _normalize_scholar_id(params.scholar_id)
     start_from = (params.page - 1) * params.per_page
@@ -684,33 +589,20 @@ async def discover_get_scholar_grants(params: GetGrantsInput) -> str:
 async def discover_get_filter_options(params: GetFilterOptionsInput) -> str:
     """Get the available filter values for scholar search (departments, tags, availability types).
 
-    Use this to discover valid filter values before passing them to discover_search_scholars.
+    Call this before discover_search_scholars to discover valid filter values:
+    its filters match on exact strings, so guessed values return nothing. The
+    filter types are 'tags' (research topics such as "Machine learning"),
+    'department' (faculty and unit names), and 'customFilterThree'
+    (availability, such as "Media enquiries").
 
-    Args:
-        params (GetFilterOptionsInput):
-            - query (str): Optional query to scope filter options (default: '' for all scholars)
-            - filter_type (str): Which filter options to return:
-                - 'tags' — research topic tags (e.g. 'Machine learning', 'Cancer')
-                - 'department' — faculty/unit names
-                - 'customFilterThree' — availability types (e.g. 'Media enquiries')
+    Result JSON carries filter_type, query, and an options list whose entries
+    have value — the exact string to pass as a filter — and count, the number
+    of matching scholars.
 
-    Returns:
-        str: JSON with:
-        {
-            "filter_type": str,
-            "query": str,
-            "options": [
-                {
-                    "value": str,    # use this exact string in discover_search_scholars filters
-                    "count": int     # number of matching scholars
-                }
-            ]
-        }
-
-    Examples:
-        - "What research topics can I filter by?" → filter_type="tags"
-        - "List all departments" → filter_type="department"
-        - "Find media-available scholars in ML" → query="machine learning", filter_type="customFilterThree"
+    For example: "What research topics can I filter by?" becomes
+    filter_type="tags". "List all departments" becomes
+    filter_type="department". "Which ML researchers take media enquiries?"
+    becomes query="machine learning", filter_type="customFilterThree".
     """
     # Build filters requesting options for the target filter type
     filters = []
