@@ -1,0 +1,10 @@
+{
+  "mcpServers": {
+    "discover-research-mcp": {
+      "type": "stdio",
+      "command": "uv",
+      "args": ["run", "python", "server.py"],
+      "cwd": "/Users/alex/code/work/discover-research-mcp"
+    }
+  }
+}
