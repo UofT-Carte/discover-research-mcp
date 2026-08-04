@@ -1,4 +1,3 @@
-#!/usr/bin/env python3
 """
 MCP Server for University of Toronto Discover Research portal.
 
@@ -7,12 +6,11 @@ publications, and research grants.
 """
 
 import json
-import re
-from typing import Optional, List
+
 import httpx
 from bs4 import BeautifulSoup
-from pydantic import BaseModel, Field, field_validator, ConfigDict
 from mcp.server.fastmcp import FastMCP
+from pydantic import BaseModel, ConfigDict, Field, field_validator
 
 mcp = FastMCP("discover_research_mcp")
 
@@ -21,10 +19,26 @@ API_URL = f"{BASE_URL}/api"
 TIMEOUT = 30.0
 
 DEFAULT_FILTERS = [
-    {"name": "department", "matchDocsWithMissingValues": True, "useValuesToFilter": False},
-    {"name": "customFilterThree", "matchDocsWithMissingValues": True, "useValuesToFilter": False},
-    {"name": "customFilterFour", "matchDocsWithMissingValues": True, "useValuesToFilter": False},
-    {"name": "customFilterFive", "matchDocsWithMissingValues": True, "useValuesToFilter": False},
+    {
+        "name": "department",
+        "matchDocsWithMissingValues": True,
+        "useValuesToFilter": False,
+    },
+    {
+        "name": "customFilterThree",
+        "matchDocsWithMissingValues": True,
+        "useValuesToFilter": False,
+    },
+    {
+        "name": "customFilterFour",
+        "matchDocsWithMissingValues": True,
+        "useValuesToFilter": False,
+    },
+    {
+        "name": "customFilterFive",
+        "matchDocsWithMissingValues": True,
+        "useValuesToFilter": False,
+    },
     {"name": "tags", "matchDocsWithMissingValues": True, "useValuesToFilter": False},
 ]
 
@@ -59,6 +73,15 @@ def _handle_error(e: Exception) -> str:
     return f"Error: {type(e).__name__}: {e}"
 
 
+def _normalize_scholar_id(scholar_id: str) -> str:
+    """Reduce a scholar identifier to the numeric form the portal expects.
+
+    Search results expose both a numeric id ('17964') and a URL-style id
+    ('17964-michael-guerzhoy'); either is accepted anywhere a scholar id is.
+    """
+    return scholar_id.split("-")[0]
+
+
 def _format_scholar_summary(scholar: dict) -> dict:
     """Extract a compact summary of a scholar from a search result."""
     about = scholar.get("tabSummaryAbout", {})
@@ -86,8 +109,11 @@ def _format_scholar_summary(scholar: dict) -> dict:
 
 # ─── Input models ───────────────────────────────────────────────────────────────
 
+
 class SearchScholarsInput(BaseModel):
-    model_config = ConfigDict(str_strip_whitespace=True, validate_assignment=True, extra="forbid")
+    model_config = ConfigDict(
+        str_strip_whitespace=True, validate_assignment=True, extra="forbid"
+    )
 
     query: str = Field(
         ...,
@@ -100,20 +126,22 @@ class SearchScholarsInput(BaseModel):
         description="How to interpret the query: 'text' for full-text keyword search, 'name' for scholar name search",
         pattern=r"^(text|name)$",
     )
-    department_filter: Optional[str] = Field(
+    department_filter: str | None = Field(
         default=None,
         description="Filter results to a specific faculty/department (e.g. 'Faculty of Arts and Science, Department of Chemistry'). Use exact values returned by discover_get_filter_options.",
     )
-    tag_filter: Optional[str] = Field(
+    tag_filter: str | None = Field(
         default=None,
         description="Filter results by a research tag/topic (e.g. 'Machine learning', 'Cancer'). Use exact values from discover_get_filter_options.",
     )
-    availability_filter: Optional[str] = Field(
+    availability_filter: str | None = Field(
         default=None,
         description="Filter by availability type (e.g. 'Media enquiries', 'Industry Projects'). Use exact values from discover_get_filter_options.",
     )
     page: int = Field(default=1, description="Page number (1-indexed)", ge=1)
-    per_page: int = Field(default=20, description="Results per page (max 100)", ge=1, le=100)
+    per_page: int = Field(
+        default=20, description="Results per page (max 100)", ge=1, le=100
+    )
 
     @field_validator("query")
     @classmethod
@@ -124,7 +152,9 @@ class SearchScholarsInput(BaseModel):
 
 
 class GetScholarInput(BaseModel):
-    model_config = ConfigDict(str_strip_whitespace=True, validate_assignment=True, extra="forbid")
+    model_config = ConfigDict(
+        str_strip_whitespace=True, validate_assignment=True, extra="forbid"
+    )
 
     scholar_id: str = Field(
         ...,
@@ -134,7 +164,9 @@ class GetScholarInput(BaseModel):
 
 
 class GetPublicationsInput(BaseModel):
-    model_config = ConfigDict(str_strip_whitespace=True, validate_assignment=True, extra="forbid")
+    model_config = ConfigDict(
+        str_strip_whitespace=True, validate_assignment=True, extra="forbid"
+    )
 
     scholar_id: str = Field(
         ...,
@@ -142,7 +174,9 @@ class GetPublicationsInput(BaseModel):
         min_length=1,
     )
     page: int = Field(default=1, description="Page number (1-indexed)", ge=1)
-    per_page: int = Field(default=25, description="Results per page (max 100)", ge=1, le=100)
+    per_page: int = Field(
+        default=25, description="Results per page (max 100)", ge=1, le=100
+    )
     sort: str = Field(
         default="dateDesc",
         description="Sort order: 'dateDesc' (newest first), 'dateAsc' (oldest first)",
@@ -151,7 +185,9 @@ class GetPublicationsInput(BaseModel):
 
 
 class GetGrantsInput(BaseModel):
-    model_config = ConfigDict(str_strip_whitespace=True, validate_assignment=True, extra="forbid")
+    model_config = ConfigDict(
+        str_strip_whitespace=True, validate_assignment=True, extra="forbid"
+    )
 
     scholar_id: str = Field(
         ...,
@@ -159,11 +195,15 @@ class GetGrantsInput(BaseModel):
         min_length=1,
     )
     page: int = Field(default=1, description="Page number (1-indexed)", ge=1)
-    per_page: int = Field(default=25, description="Results per page (max 100)", ge=1, le=100)
+    per_page: int = Field(
+        default=25, description="Results per page (max 100)", ge=1, le=100
+    )
 
 
 class GetFilterOptionsInput(BaseModel):
-    model_config = ConfigDict(str_strip_whitespace=True, validate_assignment=True, extra="forbid")
+    model_config = ConfigDict(
+        str_strip_whitespace=True, validate_assignment=True, extra="forbid"
+    )
 
     query: str = Field(
         default="",
@@ -178,6 +218,7 @@ class GetFilterOptionsInput(BaseModel):
 
 
 # ─── Tools ───────────────────────────────────────────────────────────────────────
+
 
 @mcp.tool(
     name="discover_search_scholars",
@@ -260,7 +301,13 @@ async def discover_search_scholars(params: SearchScholarsInput) -> str:
             "text": params.query,
         },
         "filters": filters,
+        # The portal defaults to 25 records when no page size is expressed, so
+        # per_page must be sent or offsets computed from it will overlap pages.
+        # The top-level startFrom is retained: perPage is verified to work
+        # alongside it, but pagination.startFrom alone is not verified to drive
+        # the offset.
         "startFrom": start_from,
+        "pagination": {"perPage": params.per_page, "startFrom": start_from},
     }
 
     try:
@@ -341,8 +388,7 @@ async def discover_get_scholar(params: GetScholarInput) -> str:
         - After finding a scholar in search results, use their 'id' here for full details
         - "Get full profile for scholar 17964" → scholar_id="17964"
     """
-    # Extract numeric ID if a full URL ID was passed (e.g. "17964-michael-guerzhoy")
-    numeric_id = params.scholar_id.split("-")[0]
+    numeric_id = _normalize_scholar_id(params.scholar_id)
 
     try:
         async with httpx.AsyncClient() as client:
@@ -390,9 +436,15 @@ async def discover_get_scholar(params: GetScholarInput) -> str:
             "personal_websites": data.get("personalWebsites", []),
             "publication_count": len(linked.get("publications", [])),
             "grant_count": len(linked.get("grants", [])),
-            "professional_activity_count": len(linked.get("professionalActivities", [])),
-            "teaching_summary": _strip_html(teaching.get("value", "")) if teaching else "",
-            "grants_summary": _strip_html(grants_summary.get("value", "")) if grants_summary else "",
+            "professional_activity_count": len(
+                linked.get("professionalActivities", [])
+            ),
+            "teaching_summary": _strip_html(teaching.get("value", ""))
+            if teaching
+            else "",
+            "grants_summary": _strip_html(grants_summary.get("value", ""))
+            if grants_summary
+            else "",
         }
         return json.dumps(profile, indent=2)
 
@@ -447,9 +499,10 @@ async def discover_get_scholar_publications(params: GetPublicationsInput) -> str
         - "List recent papers by scholar 17964" → scholar_id="17964"
         - "Find oldest publications" → scholar_id="17964", sort="dateAsc"
     """
+    scholar_id = _normalize_scholar_id(params.scholar_id)
     start_from = (params.page - 1) * params.per_page
     payload = {
-        "objectId": params.scholar_id,
+        "objectId": scholar_id,
         "category": "user",
         "pagination": {"perPage": params.per_page, "startFrom": start_from},
         "sort": params.sort,
@@ -481,20 +534,24 @@ async def discover_get_scholar_publications(params: GetPublicationsInput) -> str
                 a.get("displayName", "") for a in authors_list if a.get("displayName")
             )
 
-            pubs.append({
-                "id": p.get("discoveryId"),
-                "title": p.get("title", ""),
-                "type": p.get("objectTypeDisplayName", ""),
-                "year": year,
-                "authors": authors,
-                "journal": p.get("journal", p.get("publisherName", "")),
-                "abstract": _strip_html(p.get("abstract", ""))[:500] if p.get("abstract") else "",
-                "doi": p.get("doi", ""),
-                "url": p.get("url", ""),
-            })
+            pubs.append(
+                {
+                    "id": p.get("discoveryId"),
+                    "title": p.get("title", ""),
+                    "type": p.get("objectTypeDisplayName", ""),
+                    "year": year,
+                    "authors": authors,
+                    "journal": p.get("journal", p.get("publisherName", "")),
+                    "abstract": _strip_html(p.get("abstract", ""))[:500]
+                    if p.get("abstract")
+                    else "",
+                    "doi": p.get("doi", ""),
+                    "url": p.get("url", ""),
+                }
+            )
 
         result = {
-            "scholar_id": params.scholar_id,
+            "scholar_id": scholar_id,
             "total": total,
             "page": params.page,
             "per_page": params.per_page,
@@ -550,9 +607,10 @@ async def discover_get_scholar_grants(params: GetGrantsInput) -> str:
     Examples:
         - "What grants does scholar 1545 have?" → scholar_id="1545"
     """
+    scholar_id = _normalize_scholar_id(params.scholar_id)
     start_from = (params.page - 1) * params.per_page
     payload = {
-        "objectId": params.scholar_id,
+        "objectId": scholar_id,
         "category": "user",
         "pagination": {"perPage": params.per_page, "startFrom": start_from},
         "sort": "dateDesc",
@@ -578,18 +636,20 @@ async def discover_get_scholar_grants(params: GetGrantsInput) -> str:
         for g in resources:
             date1 = g.get("date1", {})
             date2 = g.get("date2", {})
-            grants.append({
-                "id": g.get("discoveryId"),
-                "title": g.get("title", ""),
-                "type": g.get("objectTypeDisplayName", ""),
-                "funder": g.get("funderName", ""),
-                "start_year": date1.get("year") if date1 else None,
-                "end_year": date2.get("year") if date2 else None,
-                "amount": g.get("amount", ""),
-            })
+            grants.append(
+                {
+                    "id": g.get("discoveryId"),
+                    "title": g.get("title", ""),
+                    "type": g.get("objectTypeDisplayName", ""),
+                    "funder": g.get("funderName", ""),
+                    "start_year": date1.get("year") if date1 else None,
+                    "end_year": date2.get("year") if date2 else None,
+                    "amount": g.get("amount", ""),
+                }
+            )
 
         result = {
-            "scholar_id": params.scholar_id,
+            "scholar_id": scholar_id,
             "total": total,
             "page": params.page,
             "per_page": params.per_page,
@@ -646,12 +706,20 @@ async def discover_get_filter_options(params: GetFilterOptionsInput) -> str:
     # Build filters requesting options for the target filter type
     filters = []
     for f in DEFAULT_FILTERS:
-        if f["name"] in ("department", "tags", "customFilterThree", "customFilterFour", "customFilterFive"):
-            filters.append({
-                "name": f["name"],
-                "matchDocsWithMissingValues": True,
-                "useValuesToFilter": False,
-            })
+        if f["name"] in (
+            "department",
+            "tags",
+            "customFilterThree",
+            "customFilterFour",
+            "customFilterFive",
+        ):
+            filters.append(
+                {
+                    "name": f["name"],
+                    "matchDocsWithMissingValues": True,
+                    "useValuesToFilter": False,
+                }
+            )
 
     payload = {
         "params": {
@@ -680,12 +748,15 @@ async def discover_get_filter_options(params: GetFilterOptionsInput) -> str:
         )
 
         if not target:
-            return json.dumps({
-                "filter_type": params.filter_type,
-                "query": params.query,
-                "options": [],
-                "note": f"No options found for filter type '{params.filter_type}'",
-            }, indent=2)
+            return json.dumps(
+                {
+                    "filter_type": params.filter_type,
+                    "query": params.query,
+                    "options": [],
+                    "note": f"No options found for filter type '{params.filter_type}'",
+                },
+                indent=2,
+            )
 
         options = [
             {"value": opt["value"], "count": opt["count"]}
