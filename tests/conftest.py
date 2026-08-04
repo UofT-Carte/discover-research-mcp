@@ -10,8 +10,8 @@ the same seam via `pytest_httpx`.
 import pytest
 from fastmcp import Client
 
-import server as server_module
-from server import mcp
+from discover_research_mcp import server as server_module
+from discover_research_mcp.server import mcp
 
 
 @pytest.fixture(autouse=True)

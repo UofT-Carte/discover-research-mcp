@@ -1,15 +1,13 @@
 {
-  "_comment": "Template. Replace the --directory path with the absolute path to your clone, then copy this entry into your MCP client's config. An MCP client starts the server from its own working directory, so the path cannot be relative.",
+  "_comment": "Copy the entry below into your MCP client's config. No clone or absolute path needed — uvx fetches, builds and runs the server. The repo is private, so git needs credentials with access to UofT-Carte. To run from a local clone instead, see the README.",
   "mcpServers": {
     "discover-research-mcp": {
       "type": "stdio",
-      "command": "uv",
+      "command": "uvx",
       "args": [
-        "run",
-        "--directory",
-        "/absolute/path/to/discover-research-mcp",
-        "python",
-        "server.py"
+        "--from",
+        "git+https://github.com/UofT-Carte/discover-research-mcp",
+        "discover-research-mcp"
       ]
     }
   }

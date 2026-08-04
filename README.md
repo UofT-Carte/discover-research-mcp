@@ -15,16 +15,42 @@ read fields directly instead of parsing prose.
 - Python 3.12+
 - [uv](https://docs.astral.sh/uv/)
 
-## Setup
-
-```bash
-uv sync
-```
-
 ## Connecting a client
 
 Copy the entry from [`mcp.json`](mcp.json) into your MCP client's
-configuration, replacing the path with the absolute path to your clone:
+configuration. No clone and no absolute path — uvx fetches, builds and runs it:
+
+```json
+{
+  "mcpServers": {
+    "discover-research-mcp": {
+      "type": "stdio",
+      "command": "uvx",
+      "args": [
+        "--from",
+        "git+https://github.com/UofT-Carte/discover-research-mcp",
+        "discover-research-mcp"
+      ]
+    }
+  }
+}
+```
+
+This repository is private, so git needs credentials with access to the
+`UofT-Carte` organisation — the same auth you would use to clone it.
+
+### Running from a local clone
+
+For development, or to run a version you are editing:
+
+```bash
+git clone https://github.com/UofT-Carte/discover-research-mcp
+cd discover-research-mcp
+uv sync
+```
+
+Then point the client at your clone instead. The path must be absolute, because
+an MCP client starts the server from its own working directory:
 
 ```json
 {
@@ -36,19 +62,12 @@ configuration, replacing the path with the absolute path to your clone:
         "run",
         "--directory",
         "/absolute/path/to/discover-research-mcp",
-        "python",
-        "server.py"
+        "discover-research-mcp"
       ]
     }
   }
 }
 ```
-
-The path has to be absolute. An MCP client starts the server from its own
-working directory — usually not your clone — so there is nothing for a relative
-path to resolve against. `uv run --directory` is used rather than a `cwd` key
-because it makes uv resolve this project's environment explicitly, and every
-client understands plain arguments.
 
 ## Tools
 
@@ -158,11 +177,14 @@ Nothing in the suite touches the live portal.
 
 | File | Contents |
 | --- | --- |
-| `server.py` | Server construction, middleware, and the five tool definitions |
-| `portal.py` | Portal addresses, the shared HTTP client and its lifetime, retry policy, payload and error translation |
-| `models.py` | Output models that drive the published schemas, and shared parameter types |
+| `src/discover_research_mcp/server.py` | Server construction, middleware, the five tool definitions, and the `main()` entry point |
+| `src/discover_research_mcp/portal.py` | Portal addresses, the shared HTTP client and its lifetime, retry policy, payload and error translation |
+| `src/discover_research_mcp/models.py` | Output models that drive the published schemas, and shared parameter types |
 
 `server.py` imports the other two; neither imports back.
+
+The console script `discover-research-mcp` is declared in `pyproject.toml` and
+resolves to `main()`, which serves over stdio.
 
 Background on the FastMCP migration and the design choices behind it is in
 [`docs/research/`](docs/research/).

@@ -8,8 +8,7 @@ keep the worst case bounded rather than restating the constants.
 import httpx
 import pytest
 
-import portal
-import server
+from discover_research_mcp import portal, server
 
 TOOL_NAMES = [
     "discover_search_scholars",

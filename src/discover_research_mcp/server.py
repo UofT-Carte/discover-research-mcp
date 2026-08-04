@@ -13,7 +13,7 @@ from fastmcp.server.middleware.caching import ResponseCachingMiddleware
 from fastmcp.server.middleware.error_handling import RetryMiddleware
 from pydantic import Field, StringConstraints
 
-from models import (
+from .models import (
     FilterOptionsResult,
     GrantsResult,
     PageNumber,
@@ -23,7 +23,7 @@ from models import (
     ScholarProfile,
     SearchResult,
 )
-from portal import (
+from .portal import (
     API_URL,
     BASE_URL,
     DEFAULT_FILTERS,
@@ -563,5 +563,14 @@ async def discover_get_filter_options(
         raise portal_error(e) from e
 
 
-if __name__ == "__main__":
+def main() -> None:
+    """Console entry point: serve over stdio.
+
+    Declared as `discover-research-mcp` in pyproject, so the server can be run
+    without cloning: `uvx --from git+<repo> discover-research-mcp`.
+    """
     mcp.run()
+
+
+if __name__ == "__main__":
+    main()

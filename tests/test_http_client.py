@@ -11,7 +11,7 @@ import pytest
 from fastmcp import Client
 from pytest_httpx import HTTPXMock
 
-from server import mcp
+from discover_research_mcp.server import mcp
 
 SEARCH_RESPONSE = {
     "pagination": {"startFrom": 0, "perPage": 20, "total": 0},
