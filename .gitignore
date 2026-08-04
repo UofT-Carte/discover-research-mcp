@@ -8,5 +8,11 @@ wheels/
 
 # Virtual environments
 .venv
+
+# Local agent tooling — installed per machine, not part of the project
+.agent/
 .agents/
 .claude/
+.playwright/
+.playwright-cli/
+skills-lock.json
