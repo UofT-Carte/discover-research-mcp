@@ -5,8 +5,6 @@ Provides tools to search for U of T scholars and retrieve their profiles,
 publications, and research grants.
 """
 
-import json
-
 import httpx
 from bs4 import BeautifulSoup
 from fastmcp import FastMCP
@@ -80,6 +78,18 @@ def _portal_error(e: httpx.HTTPError) -> ToolError:
     if isinstance(e, httpx.TimeoutException):
         return ToolError("Request timed out. Please try again.")
     return ToolError(f"Could not reach the portal — {type(e).__name__}: {e}")
+
+
+def _unwrap(value: object, key: str) -> str | None:
+    """Pull a scalar out of a field the portal may return wrapped.
+
+    Some profile fields arrive as objects rather than strings — `orcid` as
+    {"value", "uri"} and `emailAddress` as {"address"} (observed 2026-08-04).
+    Returns the value as-is when it is already scalar.
+    """
+    if isinstance(value, dict):
+        return value.get(key)
+    return value
 
 
 def _normalize_scholar_id(scholar_id: str) -> str:
@@ -226,6 +236,130 @@ class GetFilterOptionsInput(BaseModel):
     )
 
 
+# ─── Output models ──────────────────────────────────────────────────────────────
+#
+# These drive the published output schemas.
+#
+# Optional types are required where a field is read without a default and is
+# simply missing for some records — `id`, `name`, `year` — and where `email`
+# and `orcid` are unwrapped from objects the portal may not send at all.
+#
+# Sampled on 2026-08-04 (25 grants, 25 publications, 2 profiles): `amount` was
+# missing from all 25 grants, `doi` from 7 publications and `journal` from 4,
+# and `emailAddress` from one profile. Those were absent keys rather than
+# explicit nulls, so the `.get` defaults do apply and the values arrive as "".
+# The optional types on those particular fields are therefore defensive — the
+# sample is 25 records per endpoint, not the whole portal.
+
+
+class ScholarSummary(BaseModel):
+    """One scholar as returned by search."""
+
+    id: str | None = Field(default=None, description="Numeric id for the other tools")
+    url_id: str | None = Field(default=None, description="Slug used in the profile URL")
+    name: str | None = None
+    positions: list[str] = Field(
+        default_factory=list, description="'Department — Position Title'"
+    )
+    tags: list[str] = Field(default_factory=list, description="Research topic tags")
+    bio_excerpt: str = ""
+    availability: list[str] = Field(default_factory=list)
+    profile_url: str = ""
+
+
+class SearchResult(BaseModel):
+    total: int
+    page: int
+    per_page: int
+    has_more: bool
+    scholars: list[ScholarSummary] = Field(default_factory=list)
+
+
+class Degree(BaseModel):
+    name: str = ""
+    institution: str = ""
+
+
+class ScholarProfile(BaseModel):
+    """A scholar's full profile."""
+
+    id: str | None = None
+    name: str | None = None
+    profile_url: str = ""
+    bio: str = ""
+    email: str | None = None
+    phone: str | None = None
+    address: str | None = None
+    orcid: str | None = None
+    elements_profile_url: str | None = None
+    positions: list[dict] = Field(default_factory=list)
+    academic_appointments: list[dict] = Field(default_factory=list)
+    non_academic_appointments: list[dict] = Field(default_factory=list)
+    degrees: list[Degree] = Field(default_factory=list)
+    research_topics: list[str] = Field(default_factory=list)
+    availability: list[str] = Field(default_factory=list)
+    personal_websites: list[dict] = Field(default_factory=list)
+    publication_count: int = 0
+    grant_count: int = 0
+    professional_activity_count: int = 0
+    teaching_summary: str = ""
+    grants_summary: str = ""
+
+
+class Publication(BaseModel):
+    id: str | None = None
+    title: str | None = None
+    type: str | None = Field(default=None, description="e.g. 'Journal article'")
+    year: int | None = None
+    authors: str = ""
+    journal: str | None = None
+    abstract: str = ""
+    doi: str | None = None
+    url: str | None = None
+
+
+class PublicationsResult(BaseModel):
+    scholar_id: str
+    total: int
+    page: int
+    per_page: int
+    has_more: bool
+    publications: list[Publication] = Field(default_factory=list)
+
+
+class Grant(BaseModel):
+    id: str | None = None
+    title: str | None = None
+    type: str | None = Field(
+        default=None, description="e.g. 'Sponsored Research Agreement'"
+    )
+    funder: str | None = None
+    start_year: int | None = None
+    end_year: int | None = None
+    amount: str | None = None
+
+
+class GrantsResult(BaseModel):
+    scholar_id: str
+    total: int
+    page: int
+    per_page: int
+    has_more: bool
+    grants: list[Grant] = Field(default_factory=list)
+
+
+class FilterOption(BaseModel):
+    value: str = Field(description="Exact string to pass as a search filter")
+    count: int = Field(description="Number of matching scholars")
+
+
+class FilterOptionsResult(BaseModel):
+    filter_type: str
+    query: str
+    options: list[FilterOption] = Field(default_factory=list)
+    note: str | None = None
+
+
 # ─── Tools ───────────────────────────────────────────────────────────────────────
 
 
@@ -239,7 +373,7 @@ class GetFilterOptionsInput(BaseModel):
         "openWorldHint": True,
     },
 )
-async def discover_search_scholars(params: SearchScholarsInput) -> str:
+async def discover_search_scholars(params: SearchScholarsInput) -> SearchResult:
     """Search for University of Toronto scholars by name, subject, discipline, or topic.
 
     Returns a paginated list of matching scholar profiles with basic info. Use
@@ -312,14 +446,13 @@ async def discover_search_scholars(params: SearchScholarsInput) -> str:
 
         scholars = [_format_scholar_summary(s) for s in resources]
 
-        result = {
-            "total": total,
-            "page": params.page,
-            "per_page": params.per_page,
-            "has_more": total > start_from + len(resources),
-            "scholars": scholars,
-        }
-        return json.dumps(result, indent=2)
+        return SearchResult(
+            total=total,
+            page=params.page,
+            per_page=params.per_page,
+            has_more=total > start_from + len(resources),
+            scholars=scholars,
+        )
 
     except httpx.HTTPError as e:
         raise _portal_error(e) from e
@@ -335,7 +468,7 @@ async def discover_search_scholars(params: SearchScholarsInput) -> str:
         "openWorldHint": True,
     },
 )
-async def discover_get_scholar(params: GetScholarInput) -> str:
+async def discover_get_scholar(params: GetScholarInput) -> ScholarProfile:
     """Retrieve the full profile for a University of Toronto scholar.
 
     Returns bio, positions, degrees, contact details, research areas, and counts
@@ -380,36 +513,34 @@ async def discover_get_scholar(params: GetScholarInput) -> str:
         teaching = data.get("tabSummaryTeachingActivities", {})
         grants_summary = data.get("tabSummaryGrants", {})
 
-        profile = {
-            "id": data.get("discoveryId"),
-            "name": data.get("firstNameLastName"),
-            "profile_url": f"{BASE_URL}/{data.get('discoveryUrlId', numeric_id)}",
-            "bio": _strip_html(data.get("tabSummaryAbout", {}).get("value", "")),
-            "email": data.get("emailAddress", ""),
-            "phone": phone,
-            "address": address,
-            "orcid": data.get("orcid", ""),
-            "elements_profile_url": data.get("elementsUserProfileUrl", ""),
-            "positions": data.get("positions", []),
-            "academic_appointments": data.get("academicAppointments", []),
-            "non_academic_appointments": data.get("nonAcademicAppointments", []),
-            "degrees": degrees,
-            "research_topics": tags,
-            "availability": data.get("customFilterThree", []),
-            "personal_websites": data.get("personalWebsites", []),
-            "publication_count": len(linked.get("publications", [])),
-            "grant_count": len(linked.get("grants", [])),
-            "professional_activity_count": len(
-                linked.get("professionalActivities", [])
-            ),
-            "teaching_summary": _strip_html(teaching.get("value", ""))
-            if teaching
-            else "",
-            "grants_summary": _strip_html(grants_summary.get("value", ""))
+        # `or []` rather than a .get default, so a null collection is handled
+        # as well as a missing one. The sampled profiles sent lists, but a
+        # default only covers the absent-key case.
+        return ScholarProfile(
+            id=data.get("discoveryId"),
+            name=data.get("firstNameLastName"),
+            profile_url=f"{BASE_URL}/{data.get('discoveryUrlId', numeric_id)}",
+            bio=_strip_html(data.get("tabSummaryAbout", {}).get("value", "")),
+            email=_unwrap(data.get("emailAddress"), "address"),
+            phone=phone,
+            address=address,
+            orcid=_unwrap(data.get("orcid"), "value"),
+            elements_profile_url=_unwrap(data.get("elementsUserProfileUrl"), "uri"),
+            positions=data.get("positions") or [],
+            academic_appointments=data.get("academicAppointments") or [],
+            non_academic_appointments=data.get("nonAcademicAppointments") or [],
+            degrees=degrees,
+            research_topics=tags,
+            availability=data.get("customFilterThree") or [],
+            personal_websites=data.get("personalWebsites") or [],
+            publication_count=len(linked.get("publications") or []),
+            grant_count=len(linked.get("grants") or []),
+            professional_activity_count=len(linked.get("professionalActivities") or []),
+            teaching_summary=_strip_html(teaching.get("value", "")) if teaching else "",
+            grants_summary=_strip_html(grants_summary.get("value", ""))
             if grants_summary
             else "",
-        }
-        return json.dumps(profile, indent=2)
+        )
 
     except httpx.HTTPError as e:
         raise _portal_error(e) from e
@@ -425,7 +556,9 @@ async def discover_get_scholar(params: GetScholarInput) -> str:
         "openWorldHint": True,
     },
 )
-async def discover_get_scholar_publications(params: GetPublicationsInput) -> str:
+async def discover_get_scholar_publications(
+    params: GetPublicationsInput,
+) -> PublicationsResult:
     """Retrieve publications (scholarly and creative works) for a U of T scholar.
 
     Result JSON carries scholar_id, total, page, per_page, has_more, and a
@@ -487,15 +620,14 @@ async def discover_get_scholar_publications(params: GetPublicationsInput) -> str
                 }
             )
 
-        result = {
-            "scholar_id": scholar_id,
-            "total": total,
-            "page": params.page,
-            "per_page": params.per_page,
-            "has_more": total > start_from + len(resources),
-            "publications": pubs,
-        }
-        return json.dumps(result, indent=2)
+        return PublicationsResult(
+            scholar_id=scholar_id,
+            total=total,
+            page=params.page,
+            per_page=params.per_page,
+            has_more=total > start_from + len(resources),
+            publications=pubs,
+        )
 
     except httpx.HTTPError as e:
         raise _portal_error(e) from e
@@ -511,7 +643,7 @@ async def discover_get_scholar_publications(params: GetPublicationsInput) -> str
         "openWorldHint": True,
     },
 )
-async def discover_get_scholar_grants(params: GetGrantsInput) -> str:
+async def discover_get_scholar_grants(params: GetGrantsInput) -> GrantsResult:
     """Retrieve research grants for a University of Toronto scholar.
 
     Result JSON carries scholar_id, total, page, per_page, has_more, and a
@@ -562,15 +694,14 @@ async def discover_get_scholar_grants(params: GetGrantsInput) -> str:
                 }
             )
 
-        result = {
-            "scholar_id": scholar_id,
-            "total": total,
-            "page": params.page,
-            "per_page": params.per_page,
-            "has_more": total > start_from + len(resources),
-            "grants": grants,
-        }
-        return json.dumps(result, indent=2)
+        return GrantsResult(
+            scholar_id=scholar_id,
+            total=total,
+            page=params.page,
+            per_page=params.per_page,
+            has_more=total > start_from + len(resources),
+            grants=grants,
+        )
 
     except httpx.HTTPError as e:
         raise _portal_error(e) from e
@@ -586,7 +717,9 @@ async def discover_get_scholar_grants(params: GetGrantsInput) -> str:
         "openWorldHint": True,
     },
 )
-async def discover_get_filter_options(params: GetFilterOptionsInput) -> str:
+async def discover_get_filter_options(
+    params: GetFilterOptionsInput,
+) -> FilterOptionsResult:
     """Get the available filter values for scholar search (departments, tags, availability types).
 
     Call this before discover_search_scholars to discover valid filter values:
@@ -649,27 +782,22 @@ async def discover_get_filter_options(params: GetFilterOptionsInput) -> str:
         )
 
         if not target:
-            return json.dumps(
-                {
-                    "filter_type": params.filter_type,
-                    "query": params.query,
-                    "options": [],
-                    "note": f"No options found for filter type '{params.filter_type}'",
-                },
-                indent=2,
+            return FilterOptionsResult(
+                filter_type=params.filter_type,
+                query=params.query,
+                note=f"No options found for filter type '{params.filter_type}'",
             )
 
         options = [
             {"value": opt["value"], "count": opt["count"]}
-            for opt in target.get("options", [])
+            for opt in target.get("options") or []
         ]
 
-        result = {
-            "filter_type": params.filter_type,
-            "query": params.query,
-            "options": options,
-        }
-        return json.dumps(result, indent=2)
+        return FilterOptionsResult(
+            filter_type=params.filter_type,
+            query=params.query,
+            options=options,
+        )
 
     except httpx.HTTPError as e:
         raise _portal_error(e) from e

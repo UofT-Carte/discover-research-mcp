@@ -28,3 +28,14 @@ def call_tool():
             )
 
     return _call
+
+
+@pytest.fixture
+def list_tools():
+    """Return a coroutine yielding the tool definitions a client is offered."""
+
+    async def _list():
+        async with Client(mcp) as client:
+            return await client.list_tools()
+
+    return _list
