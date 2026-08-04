@@ -39,6 +39,15 @@ configuration. No clone and no absolute path — uvx fetches, builds and runs it
 This repository is private, so git needs credentials with access to the
 `UofT-Carte` organisation — the same auth you would use to clone it.
 
+To pin a specific release rather than tracking `main`, append a tag:
+
+```
+git+https://github.com/UofT-Carte/discover-research-mcp@v0.2.0
+```
+
+uvx caches what it installs, so an unpinned entry does not pick up new
+commits on its own. Use `uvx --refresh` to force an update.
+
 ### Running from a local clone
 
 For development, or to run a version you are editing:
