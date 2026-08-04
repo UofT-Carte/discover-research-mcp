@@ -10,6 +10,7 @@ import json
 import httpx
 from bs4 import BeautifulSoup
 from mcp.server.fastmcp import FastMCP
+from mcp.server.fastmcp.exceptions import ToolError
 from pydantic import BaseModel, ConfigDict, Field, field_validator
 
 mcp = FastMCP("discover_research_mcp")
@@ -58,19 +59,27 @@ def _strip_html(html: str) -> str:
     return soup.get_text(separator=" ").strip()
 
 
-def _handle_error(e: Exception) -> str:
-    """Return a consistent, actionable error message."""
+def _portal_error(e: httpx.HTTPError) -> ToolError:
+    """Translate an upstream portal failure into a client-visible tool error.
+
+    The result is raised, never returned. A returned string is delivered to the
+    client as a *successful* tool result, leaving the caller unable to tell a
+    portal outage from a genuine empty result set.
+    """
     if isinstance(e, httpx.HTTPStatusError):
-        if e.response.status_code == 404:
-            return "Error: Resource not found. Check that the scholar ID is correct."
-        if e.response.status_code == 400:
-            return f"Error: Bad request — {e.response.text[:200]}"
-        if e.response.status_code == 429:
-            return "Error: Rate limit exceeded. Please wait before retrying."
-        return f"Error: API returned status {e.response.status_code}"
+        status = e.response.status_code
+        if status == 404:
+            return ToolError(
+                "Resource not found. Check that the scholar ID is correct."
+            )
+        if status == 400:
+            return ToolError(f"Bad request — {e.response.text[:200]}")
+        if status == 429:
+            return ToolError("Rate limit exceeded. Please wait before retrying.")
+        return ToolError(f"Portal returned status {status}")
     if isinstance(e, httpx.TimeoutException):
-        return "Error: Request timed out. Please try again."
-    return f"Error: {type(e).__name__}: {e}"
+        return ToolError("Request timed out. Please try again.")
+    return ToolError(f"Could not reach the portal — {type(e).__name__}: {e}")
 
 
 def _normalize_scholar_id(scholar_id: str) -> str:
@@ -336,8 +345,8 @@ async def discover_search_scholars(params: SearchScholarsInput) -> str:
         }
         return json.dumps(result, indent=2)
 
-    except Exception as e:
-        return _handle_error(e)
+    except httpx.HTTPError as e:
+        raise _portal_error(e) from e
 
 
 @mcp.tool(
@@ -448,8 +457,8 @@ async def discover_get_scholar(params: GetScholarInput) -> str:
         }
         return json.dumps(profile, indent=2)
 
-    except Exception as e:
-        return _handle_error(e)
+    except httpx.HTTPError as e:
+        raise _portal_error(e) from e
 
 
 @mcp.tool(
@@ -560,8 +569,8 @@ async def discover_get_scholar_publications(params: GetPublicationsInput) -> str
         }
         return json.dumps(result, indent=2)
 
-    except Exception as e:
-        return _handle_error(e)
+    except httpx.HTTPError as e:
+        raise _portal_error(e) from e
 
 
 @mcp.tool(
@@ -658,8 +667,8 @@ async def discover_get_scholar_grants(params: GetGrantsInput) -> str:
         }
         return json.dumps(result, indent=2)
 
-    except Exception as e:
-        return _handle_error(e)
+    except httpx.HTTPError as e:
+        raise _portal_error(e) from e
 
 
 @mcp.tool(
@@ -770,8 +779,8 @@ async def discover_get_filter_options(params: GetFilterOptionsInput) -> str:
         }
         return json.dumps(result, indent=2)
 
-    except Exception as e:
-        return _handle_error(e)
+    except httpx.HTTPError as e:
+        raise _portal_error(e) from e
 
 
 if __name__ == "__main__":
