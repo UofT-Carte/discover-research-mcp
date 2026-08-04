@@ -12,11 +12,20 @@ import httpx
 from bs4 import BeautifulSoup
 from fastmcp import Context, FastMCP
 from fastmcp.exceptions import ToolError
+from fastmcp.server.middleware.caching import ResponseCachingMiddleware
+from fastmcp.server.middleware.error_handling import RetryMiddleware
 from pydantic import BaseModel, ConfigDict, Field, field_validator
 
 BASE_URL = "https://discover.research.utoronto.ca"
 API_URL = f"{BASE_URL}/api"
 TIMEOUT = 30.0
+
+# Scholar records change on the order of weeks, so a short cache costs nothing
+# in freshness while sparing the portal repeated identical lookups.
+RESPONSE_CACHE_TTL_SECONDS = 900
+
+RETRY_ATTEMPTS = 2
+RETRY_BASE_DELAY_SECONDS = 0.5
 
 DEFAULT_FILTERS = [
     {
@@ -70,7 +79,44 @@ async def lifespan(_server: FastMCP):
         yield PortalSession(http=http)
 
 
+def build_response_cache() -> ResponseCachingMiddleware:
+    """Cache successful tool results for a short window.
+
+    Only successful results are ever stored: the caching middleware performs no
+    error check before caching, but a failure raised out of a tool propagates
+    past it and is never written. That is why portal failures raise rather than
+    return — returning an error value here would memoise it for the full TTL.
+
+    Exposed as a factory so tests can reset cache state between cases.
+    """
+    return ResponseCachingMiddleware(
+        call_tool_settings={"enabled": True, "ttl": RESPONSE_CACHE_TTL_SECONDS},
+    )
+
+
 mcp = FastMCP("discover_research_mcp", lifespan=lifespan)
+
+# Cache first so a hit short-circuits before any retry bookkeeping.
+mcp.add_middleware(build_response_cache())
+mcp.add_middleware(
+    RetryMiddleware(
+        max_retries=RETRY_ATTEMPTS,
+        base_delay=RETRY_BASE_DELAY_SECONDS,
+        # The default is (ConnectionError, TimeoutError) — Python builtins that
+        # no httpx exception inherits from, so retry would silently never fire.
+        #
+        # Retry only failures to establish or hold a connection. Notably absent
+        # is ReadTimeout: the portal accepted the request and is just slow, so
+        # retrying re-pays the full timeout — with TIMEOUT at 30s that would
+        # stall a caller for over a minute before failing anyway. Also absent is
+        # HTTPStatusError, so definitive answers like 404 are not retried.
+        retry_exceptions=(
+            httpx.NetworkError,
+            httpx.ConnectTimeout,
+            httpx.PoolTimeout,
+        ),
+    )
+)
 
 
 def _http(ctx: Context) -> httpx.AsyncClient:
@@ -493,9 +539,7 @@ async def discover_search_scholars(
         "openWorldHint": True,
     },
 )
-async def discover_get_scholar(
-    params: GetScholarInput, ctx: Context
-) -> ScholarProfile:
+async def discover_get_scholar(params: GetScholarInput, ctx: Context) -> ScholarProfile:
     """Retrieve the full profile for a University of Toronto scholar.
 
     Returns bio, positions, degrees, contact details, research areas, and counts
