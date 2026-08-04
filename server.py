@@ -18,7 +18,17 @@ from pydantic import BaseModel, ConfigDict, Field, field_validator
 
 BASE_URL = "https://discover.research.utoronto.ca"
 API_URL = f"{BASE_URL}/api"
-TIMEOUT = 30.0
+
+# Connect is kept far below read because connection faults are the retried
+# class, so the connect timeout is paid once per attempt: a dead host costs
+# 3 x 5s rather than 3 x 30s. A slow-but-alive portal is not retried, so the
+# read timeout is paid at most once.
+PORTAL_TIMEOUT = httpx.Timeout(30.0, connect=5.0)
+
+# A per-attempt ceiling on everything a tool does, HTTP or not. Set above the
+# read timeout so the HTTP layer fails first with a specific diagnostic and
+# this only catches hangs the HTTP timeouts cannot see.
+TOOL_TIMEOUT_SECONDS = 35.0
 
 # Scholar records change on the order of weeks, so a short cache costs nothing
 # in freshness while sparing the portal repeated identical lookups.
@@ -26,6 +36,20 @@ RESPONSE_CACHE_TTL_SECONDS = 900
 
 RETRY_ATTEMPTS = 2
 RETRY_BASE_DELAY_SECONDS = 0.5
+
+# Retry only failures to establish or hold a connection.
+#
+# The middleware default is (ConnectionError, TimeoutError) — Python builtins
+# that no httpx exception inherits from, so retry would silently never fire.
+#
+# ReadTimeout is deliberately absent: the portal accepted the request and is
+# merely slow, so retrying re-pays the full read timeout. HTTPStatusError is
+# absent too, so definitive answers like 404 are not retried.
+RETRY_EXCEPTIONS = (
+    httpx.NetworkError,
+    httpx.ConnectTimeout,
+    httpx.PoolTimeout,
+)
 
 DEFAULT_FILTERS = [
     {
@@ -75,7 +99,7 @@ async def lifespan(_server: FastMCP):
     request context; it is deliberately not per-request dependency injection,
     which would construct a client per call and defeat the purpose.
     """
-    async with httpx.AsyncClient(headers=HEADERS, timeout=TIMEOUT) as http:
+    async with httpx.AsyncClient(headers=HEADERS, timeout=PORTAL_TIMEOUT) as http:
         yield PortalSession(http=http)
 
 
@@ -102,19 +126,7 @@ mcp.add_middleware(
     RetryMiddleware(
         max_retries=RETRY_ATTEMPTS,
         base_delay=RETRY_BASE_DELAY_SECONDS,
-        # The default is (ConnectionError, TimeoutError) — Python builtins that
-        # no httpx exception inherits from, so retry would silently never fire.
-        #
-        # Retry only failures to establish or hold a connection. Notably absent
-        # is ReadTimeout: the portal accepted the request and is just slow, so
-        # retrying re-pays the full timeout — with TIMEOUT at 30s that would
-        # stall a caller for over a minute before failing anyway. Also absent is
-        # HTTPStatusError, so definitive answers like 404 are not retried.
-        retry_exceptions=(
-            httpx.NetworkError,
-            httpx.ConnectTimeout,
-            httpx.PoolTimeout,
-        ),
+        retry_exceptions=RETRY_EXCEPTIONS,
     )
 )
 
@@ -440,6 +452,7 @@ class FilterOptionsResult(BaseModel):
 
 @mcp.tool(
     name="discover_search_scholars",
+    timeout=TOOL_TIMEOUT_SECONDS,
     annotations={
         "title": "Search U of T Scholars",
         "readOnlyHint": True,
@@ -531,6 +544,7 @@ async def discover_search_scholars(
 
 @mcp.tool(
     name="discover_get_scholar",
+    timeout=TOOL_TIMEOUT_SECONDS,
     annotations={
         "title": "Get U of T Scholar Profile",
         "readOnlyHint": True,
@@ -614,6 +628,7 @@ async def discover_get_scholar(params: GetScholarInput, ctx: Context) -> Scholar
 
 @mcp.tool(
     name="discover_get_scholar_publications",
+    timeout=TOOL_TIMEOUT_SECONDS,
     annotations={
         "title": "Get Scholar Publications",
         "readOnlyHint": True,
@@ -695,6 +710,7 @@ async def discover_get_scholar_publications(
 
 @mcp.tool(
     name="discover_get_scholar_grants",
+    timeout=TOOL_TIMEOUT_SECONDS,
     annotations={
         "title": "Get Scholar Research Grants",
         "readOnlyHint": True,
@@ -765,6 +781,7 @@ async def discover_get_scholar_grants(
 
 @mcp.tool(
     name="discover_get_filter_options",
+    timeout=TOOL_TIMEOUT_SECONDS,
     annotations={
         "title": "Get Available Search Filter Options",
         "readOnlyHint": True,
